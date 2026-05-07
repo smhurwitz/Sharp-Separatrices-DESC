@@ -11,6 +11,7 @@ from desc.backend import custom_jvp, fori_loop, jit, jnp, sign
 from desc.grid import Grid, _Grid
 from desc.io import IOAble
 from desc.utils import check_nonnegint, check_posint, flatten_list
+from scipy.special import hyp2f1
 
 __all__ = [
     "PowerSeries",
@@ -1473,6 +1474,568 @@ class ChebyshevPolynomial(_Basis):
             self._set_up()
 
 
+class GeneralizedFourierZernikeBasis:
+    """Generalized Fourier-Zernike basis set for analytic functions in a toroidal volume.
+
+    This is a sum of a Fourier-Zernike basis and a sharp Fourier-Zernike basis. 
+    The $l<0$ modes correspond to the sharp basis (with l=|l|), and the 
+    $l>=0$ modes correspond to the standard basis.
+    
+    Parameters
+    ----------
+    std_basis : FourierZernikeBasis
+        The standard Fourier-Zernike basis component.
+    shrp_basis : SharpFourierZernikeBasis
+        The sharp Fourier-Zernike basis component.
+    """
+
+    _io_attrs_ = [
+        "_NFP",
+        "_modes",
+        "_sym",
+        "_spectral_indexing",
+        "_std_basis",
+        "_shrp_basis",
+    ]
+
+    _static_attrs = [
+        "_fft_poloidal",
+        "_fft_toroidal",
+        "_NFP",
+        "_sym",
+        "_spectral_indexing",
+    ]
+
+    def __init__(self, std_basis, shrp_basis):
+        # copy from FourierZernikeBasis # TODO
+
+        assert isinstance(std_basis, FourierZernikeBasis), "std_basis must be a FourierZernikeBasis"
+        assert isinstance(shrp_basis, SharpFourierZernikeBasis), "shrp_basis must be a SharpFourierZernikeBasis"
+        self._std_basis = std_basis
+        self._shrp_basis = shrp_basis
+        assert std_basis.NFP == shrp_basis.NFP, "std_basis and shrp_basis must have the same NFP"
+        self._NFP = self._std_basis.NFP
+        assert std_basis.sym == shrp_basis.sym, "std_basis and shrp_basis must have the same sym"
+        assert std_basis.N == shrp_basis.N, "std_basis and shrp_basis must have the same N"
+        assert std_basis.spectral_indexing == shrp_basis.spectral_indexing, "std_basis and shrp_basis must have the same spectral_indexing"
+
+        self._modes = self._get_modes()
+        self._enforce_symmetry()
+        self._sort_modes()
+        self._modes = self._modes.astype(int)
+
+    def get_boundary_modes(self, fix_MA=True):
+        """Gets all modes that must be frozen during a fixed-boundary 
+        optimization. This corresponds to all sharp modes and all standard 
+        modes with L=0."""
+
+        mask = []
+        modes = self.modes.copy()
+        for mode in modes:
+            if fix_MA:
+                condition = ((mode[0] == abs(mode[1])) 
+                             or (mode[0] == 2 and mode[1] == 0)
+                             or (mode[0] < 0))
+            else:
+                condition = (mode[0] == abs(mode[1]) or (mode[0] < 0))
+            mask.append(condition)
+        mask = np.array(mask)
+        return self.modes[mask], mask
+
+    def get_idx(self, L=0, M=0, N=0, error=True):
+        """Get the index of the ``'modes'`` array corresponding to given mode numbers.
+
+        Parameters
+        ----------
+        L : int
+            Radial mode number.
+        M : int
+            Poloidal mode number.
+        N : int
+            Toroidal mode number.
+        error : bool
+            Whether to raise exception if the mode is not in the basis (default),
+            or to return an empty array.
+
+        Returns
+        -------
+        idx : int
+            Index of given mode numbers.
+
+        """
+        mode = np.array([L, M, N])
+        idx = np.where((mode == self.modes).all(axis=-1))[0].squeeze()
+        if not idx.size:
+            if error:
+                raise ValueError(
+                    "mode ({}, {}, {}) is not in basis {}".format(L, M, N, str(self))
+                )
+            return idx
+        return int(idx)
+    
+    def evaluate(
+        self, nodes, derivatives=np.array([0, 0, 0]), modes=None, unique=False
+    ):
+        """Evaluate basis functions at specified nodes.
+
+        Parameters
+        ----------
+        nodes : ndarray of float, size(num_nodes,3)
+            Node coordinates, in (rho,theta,zeta).
+        derivatives : ndarray of int, shape(num_derivatives,3)
+            Order of derivatives to compute in (rho,theta,zeta).
+        modes : ndarray of int, shape(num_modes,3), optional
+            Basis modes to evaluate (if None, full basis is used).
+        unique : bool, optional
+            Whether to workload by only calculating for unique values of nodes, modes
+            can be faster, but doesn't work with jit or autodiff.
+
+        Returns
+        -------
+        y : ndarray, shape(num_nodes,num_modes)
+            Basis functions evaluated at nodes.
+
+        """
+
+        if not (derivatives == [0, 0, 0]).all():
+            raise NotImplementedError("Derivatives are not yet implemented for GeneralizedFourierZernikeBasis")
+        if modes is None:
+            modes = self.modes
+        if unique:
+            raise NotImplementedError("Evaluating with unique=True is not yet implemented for GeneralizedFourierZernikeBasis")
+        
+        modes = modes.copy()
+        std_mask = modes[:, 0] >= 0
+        std_modes = modes[std_mask]
+        sharp_mask = ~std_mask
+        sharp_modes = modes[sharp_mask]
+        sharp_modes[:, 0] = -sharp_modes[:, 0]
+        A_sharp = self.shrp_basis.evaluate(nodes, derivatives, modes=sharp_modes, unique=unique)
+        A_std = self.std_basis.evaluate(nodes, derivatives, modes=std_modes, unique=unique)
+        A = np.empty((len(nodes), len(modes)))
+        A[:, std_mask] = A_std
+        A[:, sharp_mask] = A_sharp
+        return A
+
+    
+    def _get_modes(self):
+        std_modes = self._std_basis.modes
+        shp_modes = self._shrp_basis.modes.copy()
+        shp_modes[:,0] = -shp_modes[:,0]
+        shp_modes = shp_modes[shp_modes[:, 0] != 0] # remove duplicate at l=0
+        return np.vstack((shp_modes, std_modes))
+    
+    def _sort_modes(self):
+        """Sorts modes for use with FFT."""
+        sort_idx = np.lexsort((self.modes[:, 1], self.modes[:, 0], self.modes[:, 2]))
+        self._modes = self.modes[sort_idx]
+    
+    def _set_up(self):
+        """Do things after loading or changing resolution."""
+        # Also recreates any attributes not in _io_attrs on load from input file.
+        # See IOAble class docstring for more info.
+        self._enforce_symmetry()
+        self._sort_modes()
+        # ensure things that should be ints are ints
+        self._NFP = int(self._NFP)
+        self._modes = self._modes.astype(int)
+    
+    def _enforce_symmetry(self):
+        """Enforce stellarator symmetry."""
+        assert self.sym in [
+            "sin",
+            "sine",
+            "cos",
+            "cosine",
+            "even",
+            "cos(t)",
+            "no n=0",
+            False,
+            None,
+        ], f"Unknown symmetry type {self.sym}"
+        if self.sym in ["cos", "cosine"]:  # cos(m*t-n*z) symmetry
+            self._modes = self.modes[
+                np.asarray(sign(self.modes[:, 1]) == sign(self.modes[:, 2]))
+            ]
+        elif self.sym in ["sin", "sine"]:  # sin(m*t-n*z) symmetry
+            self._modes = self.modes[
+                np.asarray(sign(self.modes[:, 1]) != sign(self.modes[:, 2]))
+            ]
+        elif self.sym == "even":  # even powers of rho
+            self._modes = self.modes[np.asarray(self.modes[:, 0] % 2 == 0)]
+        elif self.sym == "cos(t)":  # cos(m*t) terms only
+            self._modes = self.modes[np.asarray(sign(self.modes[:, 1]) >= 0)]
+        elif self.sym == "no n=0":  # no n=0 mode
+            self._modes = self.modes[np.asarray(self.modes[:, 2] != 0)]
+        elif self.sym is None:
+            self._sym = False
+    
+    @property
+    def modes(self):
+        """ndarray: Mode numbers [l,m,n]."""
+        return self.__dict__.setdefault("_modes", np.array([]).reshape((0, 3)))
+    
+    @property
+    def NFP(self):
+        """int: Number of field periods."""
+        return self.__dict__.setdefault("_NFP", 1)
+    
+    @property
+    def num_modes(self):
+        """int: Total number of modes in the spectral basis."""
+        return self.modes.shape[0]
+    
+    @property
+    def spectral_indexing(self):
+        """str: Type of indexing used for the spectral basis."""
+        return self.__dict__.setdefault("_spectral_indexing", "linear")
+
+    @property
+    def fft_poloidal(self):
+        """bool: whether this basis is compatible with fft in the poloidal direction."""
+        if not hasattr(self, "_fft_poloidal"):
+            self._fft_poloidal = False
+        return self._fft_poloidal
+
+    @property
+    def fft_toroidal(self):
+        """bool: whether this basis is compatible with fft in the toroidal direction."""
+        if not hasattr(self, "_fft_toroidal"):
+            self._fft_toroidal = False
+        return self._fft_toroidal
+    
+    @property
+    def shrp_basis(self):
+        """The `SharpFourierZernikeBasis` component of the generalized basis."""
+        return self._shrp_basis
+    
+    @property
+    def std_basis(self):
+        """The `FourierZernikeBasis` component of the generalized basis."""
+        return self._std_basis
+    
+    @property
+    def sym(self):
+        """str: Type of symmetry."""
+        # one of: {'even', 'sin', 'cos', 'cos(t)', False}
+        return self.__dict__.setdefault("_sym", False)
+    
+    def __repr__(self):
+        """Get the string form of the object."""
+        raise NotImplementedError("TODO")
+    
+    def __hash__(self):
+        """Get the hash of the object."""
+        raise NotImplementedError("TODO")
+
+    def __eq__(self, other):
+        """Check if two basis objects are equal."""
+        raise NotImplementedError("TODO")
+        
+    
+class SharpFourierZernikeBasis(_Basis):
+    """3D basis set for analytic functions in a toroidal volume.
+
+    Zernike polynomials in the radial & poloidal coordinates, and a Fourier
+    series in the toroidal coordinate.
+
+    Parameters
+    ----------
+    L : int
+        Maximum radial resolution. Use L=-1 for default based on M.
+    M : int
+        Maximum poloidal resolution.
+    N : int
+        Maximum toroidal resolution.
+    NFP : int
+        Number of field periods.
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    n_b : int
+        Toroidal mode number of boundary.
+    β : float
+        Angle of corners for lens mapping method.
+    sharp_type : str
+        Method for sharp mapping, either "lens" or "hypergeometric".
+    sym : {``'cos'``, ``'sin'``, ``False``}
+        * ``'cos'`` for cos(m*t-n*z) symmetry
+        * ``'sin'`` for sin(m*t-n*z) symmetry
+        * ``False`` for no symmetry (Default)
+    spectral_indexing : {``'ansi'``, ``'fringe'``}
+        Indexing method, default value = ``'ansi'``
+
+        For L=0, all methods are equivalent and give a "chevron" shaped
+        basis (only the outer edge of the zernike pyramid of width M).
+        For L>0, the indexing scheme defines order of the basis functions:
+
+        ``'ansi'``: ANSI indexing fills in the pyramid with triangles of
+        decreasing size, ending in a triangle shape. For L == M,
+        the traditional ANSI pyramid indexing is recovered. For L>M, adds rows
+        to the bottom of the pyramid, increasing L while keeping M constant,
+        giving a "house" shape.
+
+        ``'fringe'``: Fringe indexing fills in the pyramid with chevrons of
+        decreasing size, ending in a diamond shape for L=2*M where
+        the traditional fringe/U of Arizona indexing is recovered.
+        For L > 2*M, adds chevrons to the bottom, making a hexagonal diamond.
+    number : int
+        Method number for writing the basis functions, see section I of 
+        "notebook.ipynb" for details. These are 0 (the standard Fourier-Zernike
+        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map 
+        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the 
+        standard map). The default is 4, which gives the best convergence. 
+
+    """
+
+    _fft_poloidal = False
+    _fft_toroidal = True
+
+    def __init__(self, 
+                 L, 
+                 M, 
+                 N, 
+                 NFP=1, 
+                 m_b=1, 
+                 n_b=1, 
+                 β=0.75*np.pi, 
+                 sharp_type="lens",
+                 sym=False, 
+                 spectral_indexing="ansi",
+                 number=4):
+        self._L = check_nonnegint(L, "L", False)
+        self._M = check_nonnegint(M, "M", False)
+        self._N = check_nonnegint(N, "N", False)
+        self._NFP = check_posint(NFP, "NFP", False)
+        self._m_b = check_posint(m_b, "m_b", False)
+        assert m_b % NFP == 0, "m_b must be a multiple of NFP"
+        self._n_b = check_posint(n_b, "n_b", False)
+        assert β > 0 and β <= np.pi, "β must be between 0 and pi"
+        self._β = β
+        assert sharp_type in ["lens", "hypergeometric"], "Unknown sharp_type: {}".format(sharp_type)
+        if sharp_type == "hypergeometric":
+            assert m_b >= 3, "m_b must be at least 3 for hypergeometric method"
+        self._sharp_type = sharp_type
+        self._sym = bool(sym) if not sym else str(sym)
+        self._spectral_indexing = str(spectral_indexing)
+        self._number = check_nonnegint(number, "number", False)
+        assert self._number in [0, 1, 4, 6], "Unknown method number: {}".format(number)
+        self._modes = self._get_modes(
+            L=self.L, M=self.M, N=self.N, spectral_indexing=self.spectral_indexing
+        )
+
+        super().__init__()
+    
+    def change_resolution(self, L, M, N, NFP=None, sym=None):
+        """Change resolution of the basis to the given resolutions.
+
+        Parameters
+        ----------
+        L : int
+            Maximum radial resolution.
+        M : int
+            Maximum poloidal resolution.
+        N : int
+            Maximum toroidal resolution.
+        NFP : int
+            Number of field periods.
+        sym : bool
+            Whether to enforce stellarator symmetry.
+
+        Returns
+        -------
+        None
+
+        """
+        NFP = check_posint(NFP, "NFP")
+        self._NFP = NFP if NFP is not None else self.NFP
+        if (
+            L != self.L
+            or M != self.M
+            or N != self.N
+            or (sym is not None and sym != self.sym)
+        ):
+            self._L = check_nonnegint(L, "L", False)
+            self._M = check_nonnegint(M, "M", False)
+            self._N = check_nonnegint(N, "N", False)
+            self._sym = sym if sym is not None else self.sym
+            self._modes = self._get_modes(
+                self.L, self.M, self.N, spectral_indexing=self.spectral_indexing
+            )
+            self._set_up()
+    
+    def _get_modes(self, L, M, N, spectral_indexing="ansi"):
+        """Get mode numbers for Fourier-Zernike basis functions.
+
+        Parameters
+        ----------
+        L : int
+            Maximum radial resolution.
+        M : int
+            Maximum poloidal resolution.
+        N : int
+            Maximum toroidal resolution.
+        spectral_indexing : {``'ansi'``, ``'fringe'``}
+            Indexing method, default value = ``'ansi'``
+
+            For L=0, all methods are equivalent and give a "chevron" shaped
+            basis (only the outer edge of the zernike pyramid of width M).
+            For L>0, the indexing scheme defines order of the basis functions:
+
+            ``'ansi'``: ANSI indexing fills in the pyramid with triangles of
+            decreasing size, ending in a triangle shape. For L == M,
+            the traditional ANSI pyramid indexing is recovered. For L>M, adds rows
+            to the bottom of the pyramid, increasing L while keeping M constant,
+            giving a "house" shape.
+
+            ``'fringe'``: Fringe indexing fills in the pyramid with chevrons of
+            decreasing size, ending in a diamond shape for L=2*M where
+            the traditional fringe/U of Arizona indexing is recovered.
+            For L > 2*M, adds chevrons to the bottom, making a hexagonal diamond.
+
+        Returns
+        -------
+        modes : ndarray of int, shape(num_modes,3)
+            Array of mode numbers [l,m,n].
+            Each row is one basis function with modes (l,m,n).
+
+        """
+        assert spectral_indexing in [
+            "ansi",
+            "fringe",
+        ], "Unknown spectral_indexing: {}".format(spectral_indexing)
+
+        if spectral_indexing == "ansi":
+            pol_posm = [
+                [(m + d, m) for m in range(0, M + 1) if m + d < M + 1]
+                for d in range(0, L + 1, 2)
+            ]
+            if L > M:
+                pol_posm += [
+                    (l, m)
+                    for l in range(M + 1, L + 1)
+                    for m in range(0, M + 1)
+                    if (l - m) % 2 == 0
+                ]
+
+        elif spectral_indexing == "fringe":
+            pol_posm = [
+                [(m + d // 2, m - d // 2) for m in range(0, M + 1) if m - d // 2 >= 0]
+                for d in range(0, L + 1, 2)
+            ]
+            if L > 2 * M:
+                pol_posm += [
+                    [(l - m, m) for m in range(0, M + 1)]
+                    for l in range(2 * M, L + 1, 2)
+                ]
+
+        pol = [
+            [(l, m), (l, -m)] if m != 0 else [(l, m)] for l, m in flatten_list(pol_posm)
+        ]
+        pol = np.array(flatten_list(pol))
+        num_pol = len(pol)
+
+        pol = np.tile(pol, (2 * N + 1, 1))
+        tor = np.atleast_2d(
+            np.tile(np.arange(-N, N + 1), (num_pol, 1)).flatten(order="f")
+        ).T
+
+ 
+        modes = np.unique(np.hstack([pol, tor]), axis=0)
+
+        if self.number == 6: # add modes for the sharp mapping for l=-1
+            modes_sharp = [[-1, a, b] for a in (-1, 1) for b in range(-N, N+1)]
+            modes = np.append(modes, modes_sharp, axis=0) # add modes for the sharp mapping
+        return modes
+    
+    def evaluate(
+        self, nodes, derivatives=np.array([0, 0, 0]), modes=None, unique=False
+    ):
+        """Evaluate basis functions at specified nodes.
+
+        Parameters
+        ----------
+        nodes : ndarray of float, size(num_nodes,3)
+            Node coordinates, in (rho,theta,zeta).
+        derivatives : ndarray of int, shape(num_derivatives,3)
+            Order of derivatives to compute in (rho,theta,zeta).
+        modes : ndarray of int, shape(num_modes,3), optional
+            Basis modes to evaluate (if None, full basis is used).
+        unique : bool, optional
+            Whether to workload by only calculating for unique values of nodes, modes
+            can be faster, but doesn't work with jit or autodiff.
+
+        Returns
+        -------
+        y : ndarray, shape(num_nodes,num_modes)
+            Basis functions evaluated at nodes.
+
+        """
+        if modes is None:
+            modes = self.modes
+        if not len(modes):
+            return np.array([]).reshape((len(nodes), 0))
+
+        # TODO(#1243): avoid duplicate calculations when mixing derivatives
+        r, t, z = nodes.T
+        l, m, n = modes.T
+        lm = modes[:, :2]
+
+        if unique:
+            raise NotImplementedError("Evaluating with unique=True is not yet implemented for SharpFourierZernikeBasis")
+
+        dr = derivatives[0]
+        dt = derivatives[1]
+        dz = derivatives[2]
+
+        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], l, m, dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
+        toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
+
+        return rp * toroidal
+    
+    def __eq__(self, other):
+        """Check if two basis objects are equal."""
+        if not isinstance(other, _Basis):
+            return False
+        return (
+            self.__class__ == other.__class__
+            and self.m_b == other.m_b
+            and self.n_b == other.n_b
+            and self.β == other.β
+            and self.sharp_type == other.sharp_type
+            and self.number == other.number
+            and super().__eq__(other)
+        )
+    
+    @property
+    def number(self):
+        """int: Method number for writing the basis functions, see section I of 
+        "notebook.ipynb" for details. These are 0 (the standard Fourier-Zernike
+        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map 
+        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the 
+        standard map). The default is 4, which gives the best convergence."""
+        return self._number
+
+    @property
+    def m_b(self):
+        """int: Poloidal mode number of boundary."""
+        return self._m_b
+    
+    @property
+    def n_b(self):
+        """int: Toroidal mode number of boundary."""
+        return self._n_b
+    
+    @property
+    def β(self):
+        """float: Angle of corners for lens mapping method."""
+        return self._β
+    
+    @property
+    def sharp_type(self):
+        """str: Method for sharp mapping, either "lens" or "hypergeometric"."""
+        return self._sharp_type
+
+
 def polyder_vec(p, m, exact=False):
     """Vectorized version of polyder.
 
@@ -2021,3 +2584,210 @@ def _jacobi_jvp(dx, x, xdot):
     # probably a more elegant fix, but just setting those derivatives to zero seems
     # to work fine.
     return f, df * xdot
+
+
+@functools.partial(jit, static_argnums=[3,4,5,6,7])
+def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=True):
+    """
+    Perform the sharp mapping from unit disc to the desired shape.
+    
+    Parameters
+    ----------
+    ρ : ndarray
+        Radial coordinates to evaluate basis.
+    θ : ndarray
+        Poloidal coordinates to evaluate basis.
+    ζ : ndarray
+        Toroidal coordinates to evaluate basis.
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    n_b : int
+        Toroidal mode number of boundary.
+    β : float
+        Angle of corners for lens mapping method.
+    sharp_type : str
+        Method for sharp mapping, either "lens" or "hypergeometric".
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the original map.
+
+    Returns
+    -------
+    w : ndarray
+        The mapped complex coordinates after applying the sharp mapping.
+
+    """
+
+    α_b = θ - n_b * ζ / m_b
+    if sharp_type == "hypergeometric":
+        return hyp2f1_map(ρ, α_b, m_b, fix_quadrature) * jnp.exp(1j * n_b * ζ / m_b)
+    elif sharp_type == "lens":
+        return lens_map(ρ, α_b, m_b, β, fix_quadrature) * jnp.exp(1j * n_b * ζ / m_b)
+    else:
+        raise ValueError("Unknown sharp_type: {}".format(sharp_type))
+
+
+@functools.partial(jit, static_argnums=[2, 3])
+def hyp2f1_map(ρ, α, m_b, fix_quadrature=True):
+    """
+    Performs mapping from unit disc to regular m_b-gon.
+
+    Parameters
+    ----------
+    ρ : ndarray
+        Radial coordinates to evaluate basis.
+    α : ndarray
+        Poloidal coordinates to evaluate basis.
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the
+        original map.
+
+    Returns
+    -------
+    w : float
+        The mapped complex number.
+
+    """
+
+    ρ = jnp.asarray(ρ)
+    α = jnp.asarray(α)
+    π = jnp.pi
+
+    if not jax.config.jax_disable_jit:
+        raise RuntimeError("The hypergeometric mapping code must be run without " \
+        "JAX JIT. Please run with `with jax.disable_jit():`.")
+
+    a = 2.0 / m_b
+    b = 1.0 / m_b
+    c = (m_b + 1.0) / m_b
+
+    if fix_quadrature:
+        α = α - ρ ** 4 * jnp.e ** (-(m_b-3)/12) * jnp.sin(α * m_b) / m_b
+
+    z = ρ * jnp.e ** (1j * α)
+    z = jnp.asarray(z)
+
+    return jnp.array([hyp2f1(a, b, c, zi ** m_b) * zi / hyp2f1(a, b, c, 1) for zi in z])
+
+    
+@functools.partial(jit, static_argnums=[2, 3, 4])
+def lens_map(ρ, α, m_b, β, fix_quadrature=True):
+    """
+    Performs mapping from unit disc to an m_b-lens.
+
+    Parameters
+    ----------
+    ρ : ndarray
+        Radial coordinates to evaluate basis.
+    α : ndarray
+        Poloidal coordinates to evaluate basis.
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    β : float
+        Angle of corners for lens mapping method.
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the
+        original map.
+
+    Returns
+    -------
+    w : float
+        The mapped complex number.
+
+    """
+    ρ = jnp.asarray(ρ)
+    α = jnp.asarray(α)
+    π = jnp.pi
+
+    def lens_map_2D(z, β):
+        zt = ((1+z)**(β/π)-(1-z)**(β/π))/((1+z)**(β/π)+(1-z)**(β/π))
+        return zt
+    
+    if fix_quadrature:
+        α = α * 1.0 - min(1, 2*(0.99-(β/π)))* ρ**m_b * (jnp.sin(m_b * α)  / m_b)
+
+    z = ρ * jnp.exp(1j * α)
+    z = jnp.asarray(z)
+
+    L2 = lens_map_2D(z ** (m_b / 2.0), β)
+    L2 = jnp.atleast_1d(L2)
+    rad = jnp.abs(L2)
+    arg = jnp.unwrap(2 * jnp.angle(L2), axis=0) / 2 # the 2's are for jnp.unwrap to work
+    LM = rad ** (2.0 / m_b) * jnp.exp(2j * arg / m_b)
+    # jax.debug.print("rad: {rad}, arg: {arg}, LM: {LM}", rad=rad, arg=jnp.angle(L2), LM=LM)
+    return LM
+
+
+@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12])
+def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4):
+    """Evaluate the sharp Zernike polynomial for given mode numbers at given nodes.
+
+    Parameters
+    ----------
+    r : ndarray, shape(N,)
+        radial coordinates to evaluate basis
+    t : ndarray, shape(N,)
+        poloidal coordinates to evaluate basis
+    z : ndarray, shape(N,)
+        toroidal coordinates to evaluate basis
+    l : ndarray of int, shape(K,)
+        radial mode number(s)
+    m : ndarray of int, shape(K,)
+        azimuthal mode number(s)
+    dr : int
+        order of derivative (Default = 0)
+    dt : int
+        order of derivative (Default = 0)
+    dz : int
+        order of derivative (Default = 0)
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    n_b : int
+        Toroidal mode number of boundary.
+    β : float
+        Angle of corners for lens mapping method.
+    sharp_type : str
+        Method for sharp mapping, either "lens" or "hypergeometric".
+    number : int
+        Method number for writing the basis functions, see section I of 
+        "notebook.ipynb" for details. These are 0 (the standard Fourier-Zernike
+        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map 
+        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the 
+        standard map). The default is 4, which gives the best convergence.
+
+    Returns
+    -------
+    y : ndarray, shape(N,K)
+        basis function(s) evaluated at specified points
+
+    """
+
+    r, t, z, l, m = map(jnp.asarray, (r, t, z, l, m))
+
+    if dr != 0 or dt != 0 or dz != 0:
+        raise NotImplementedError("Derivatives of sharp Zernike polynomials are not yet implemented")
+
+    if number == 0:
+        return zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
+    elif number == 1:
+        std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+        return jnp.abs(z_tilde) * std_val
+    elif number == 4:
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+        r_tilde = jnp.abs(z_tilde)
+        t_tilde = jnp.angle(z_tilde)
+        return zernike_radial(r_tilde, l, m, dr=0) * fourier(t_tilde, m, dt=0)
+    elif number == 6:
+        std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+
+        sharp_val = jnp.where(
+            m == -1,
+            z_tilde.imag,
+            jnp.where(m == 1, z_tilde.real, jnp.nan),
+        )
+
+        out = jnp.where(l >= 0, std_val, jnp.nan)
+        out = jnp.where(l == -1, sharp_val, out)
+
+        return out
