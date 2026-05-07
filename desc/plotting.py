@@ -3937,7 +3937,7 @@ def plot_basis(  # noqa : C901
 
         return fig, ax
 
-    elif basis.__class__.__name__ in ["ZernikePolynomial", "FourierZernikeBasis"]:
+    elif basis.__class__.__name__ in ["ZernikePolynomial", "FourierZernikeBasis", "SharpFourierZernikeBasis"]:
         lmax = abs(basis.modes[:, 0]).max().astype(int)
         mmax = abs(basis.modes[:, 1]).max().astype(int)
 
@@ -3988,6 +3988,102 @@ def plot_basis(  # noqa : C901
             y=0.98,
             fontsize=title_fontsize,
         )
+        _set_tight_layout(fig)
+        if return_data:
+            return fig, ax, plot_data
+
+        return fig, ax
+    
+    elif basis.__class__.__name__ == "GeneralizedFourierZernikeBasis":
+        std_basis = basis.std_basis
+        shp_basis = basis.shrp_basis
+
+        L_std = int(np.max(std_basis.modes[:, 0])) if std_basis.modes.size else 0
+        M_std = int(np.max(np.abs(std_basis.modes[:, 1]))) if std_basis.modes.size else 0
+
+        # sharp basis uses positive l internally, generalized basis uses negative l
+        L_shp = int(np.max(shp_basis.modes[:, 0])) if shp_basis.modes.size else 0
+        M_shp = int(np.max(np.abs(shp_basis.modes[:, 1]))) if shp_basis.modes.size else 0
+
+        mmax = max(M_std, M_shp)
+
+        # top half has L_shp rows, center row is l=0, bottom half has L_std rows
+        nrows = L_shp + 1 + L_std
+        ncols = 2 * (mmax + 1) + 1  # +1 for colorbar column
+
+        grid = LinearGrid(rho=100, theta=100, endpoint=True)
+        r = grid.nodes[grid.unique_rho_idx, 0]
+        v = grid.nodes[grid.unique_theta_idx, 1]
+
+        fig = plt.figure(
+            figsize=kwargs.get(
+                "figsize",
+                (3 * max(mmax, 1), max(4, 2 * nrows)),
+            )
+        )
+
+        ratios = np.ones(ncols)
+        ratios[-1] = kwargs.get("cbar_ratio", 0.15)
+        gs = matplotlib.gridspec.GridSpec(nrows, ncols, width_ratios=ratios)
+
+        plot_data = {
+            "amplitude": [],
+            "rho": r,
+            "theta": v,
+            "l": basis.modes[:, 0],
+            "m": basis.modes[:, 1],
+        }
+
+        ax = {}
+
+        # only plot n=0 slice, consistent with existing Zernike/FourierZernike plotting
+        modes = basis.modes[basis.modes[:, 2] == 0]
+        Zs = basis.evaluate(grid.nodes, modes=modes, derivatives=derivative)
+
+        center_row = L_shp
+
+        for i, (l, m) in enumerate(zip(modes[:, 0].astype(int), modes[:, 1].astype(int))):
+            Z = Zs[:, i].reshape((grid.num_rho, grid.num_theta))
+
+            # generalized layout:
+            #   sharp modes (l<0) go above center row as an inverted pyramid
+            #   standard modes (l>=0) go below center row as a regular pyramid
+            if l < 0:
+                row = center_row - abs(l)
+            else:
+                row = center_row + l
+
+            col0 = m + mmax
+            ax[(l, m)] = plt.subplot(gs[row, col0 : col0 + 2], projection="polar")
+            ax[(l, m)].set_title(f"$l={l}, m={m}$")
+            ax[(l, m)].axis("off")
+
+            im = ax[(l, m)].contourf(
+                v,
+                r,
+                Z,
+                levels=np.linspace(-1, 1, 100) if no_derivative else 100,
+                cmap=kwargs.get("cmap", "coolwarm"),
+            )
+            plot_data["amplitude"].append(Z)
+
+        cb_ax = plt.subplot(gs[:, -1])
+        plt.subplots_adjust(right=0.8)
+        cbar = fig.colorbar(im, cax=cb_ax)
+        if no_derivative:
+            cbar.set_ticks(np.linspace(-1, 1, 9))
+
+        fig.suptitle(
+            (
+                f"{basis.__class__.__name__}, "
+                f"standard: $L={std_basis.L}$, $M={std_basis.M}$; "
+                f"sharp: $L={shp_basis.L}$, $M={shp_basis.M}$, "
+                f"spectral indexing = {basis.spectral_indexing}"
+            ),
+            y=0.98,
+            fontsize=title_fontsize,
+        )
+
         _set_tight_layout(fig)
         if return_data:
             return fig, ax, plot_data

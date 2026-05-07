@@ -7,7 +7,7 @@ from math import factorial
 import mpmath
 import numpy as np
 
-from desc.backend import custom_jvp, fori_loop, jit, jnp, sign
+from desc.backend import custom_jvp, fori_loop, jit, jnp, sign, jax
 from desc.grid import Grid, _Grid
 from desc.io import IOAble
 from desc.utils import check_nonnegint, check_posint, flatten_list
@@ -1573,22 +1573,17 @@ class GeneralizedFourierZernikeBasis:
             return idx
         return int(idx)
     
-    def evaluate(
-        self, nodes, derivatives=np.array([0, 0, 0]), modes=None, unique=False
-    ):
+    def evaluate(self, grid, derivatives=np.array([0, 0, 0]), modes=None):
         """Evaluate basis functions at specified nodes.
 
         Parameters
         ----------
-        nodes : ndarray of float, size(num_nodes,3)
+        grid : Grid or ndarray of float, size(num_nodes,3)
             Node coordinates, in (rho,theta,zeta).
         derivatives : ndarray of int, shape(num_derivatives,3)
             Order of derivatives to compute in (rho,theta,zeta).
         modes : ndarray of int, shape(num_modes,3), optional
             Basis modes to evaluate (if None, full basis is used).
-        unique : bool, optional
-            Whether to workload by only calculating for unique values of nodes, modes
-            can be faster, but doesn't work with jit or autodiff.
 
         Returns
         -------
@@ -1597,12 +1592,12 @@ class GeneralizedFourierZernikeBasis:
 
         """
 
-        if not (derivatives == [0, 0, 0]).all():
-            raise NotImplementedError("Derivatives are not yet implemented for GeneralizedFourierZernikeBasis")
+        if not isinstance(grid, _Grid):
+            grid = Grid(grid, sort=False, jitable=True)
         if modes is None:
             modes = self.modes
-        if unique:
-            raise NotImplementedError("Evaluating with unique=True is not yet implemented for GeneralizedFourierZernikeBasis")
+        if not len(modes):
+            return np.array([]).reshape((grid.num_nodes, 0))
         
         modes = modes.copy()
         std_mask = modes[:, 0] >= 0
@@ -1610,9 +1605,9 @@ class GeneralizedFourierZernikeBasis:
         sharp_mask = ~std_mask
         sharp_modes = modes[sharp_mask]
         sharp_modes[:, 0] = -sharp_modes[:, 0]
-        A_sharp = self.shrp_basis.evaluate(nodes, derivatives, modes=sharp_modes, unique=unique)
-        A_std = self.std_basis.evaluate(nodes, derivatives, modes=std_modes, unique=unique)
-        A = np.empty((len(nodes), len(modes)))
+        A_sharp = self.shrp_basis.evaluate(grid, derivatives, modes=sharp_modes)
+        A_std = self.std_basis.evaluate(grid, derivatives, modes=std_modes)
+        A = np.empty((len(grid.nodes), len(modes)))
         A[:, std_mask] = A_std
         A[:, sharp_mask] = A_sharp
         return A
@@ -1947,22 +1942,17 @@ class SharpFourierZernikeBasis(_Basis):
             modes = np.append(modes, modes_sharp, axis=0) # add modes for the sharp mapping
         return modes
     
-    def evaluate(
-        self, nodes, derivatives=np.array([0, 0, 0]), modes=None, unique=False
-    ):
+    def evaluate(self, grid, derivatives=np.array([0, 0, 0]), modes=None):
         """Evaluate basis functions at specified nodes.
 
         Parameters
         ----------
-        nodes : ndarray of float, size(num_nodes,3)
+        grid : Grid or ndarray of float, size(num_nodes,3)
             Node coordinates, in (rho,theta,zeta).
         derivatives : ndarray of int, shape(num_derivatives,3)
             Order of derivatives to compute in (rho,theta,zeta).
         modes : ndarray of int, shape(num_modes,3), optional
             Basis modes to evaluate (if None, full basis is used).
-        unique : bool, optional
-            Whether to workload by only calculating for unique values of nodes, modes
-            can be faster, but doesn't work with jit or autodiff.
 
         Returns
         -------
@@ -1970,25 +1960,62 @@ class SharpFourierZernikeBasis(_Basis):
             Basis functions evaluated at nodes.
 
         """
+        if not isinstance(grid, _Grid):
+            grid = Grid(grid, sort=False, jitable=True)
         if modes is None:
             modes = self.modes
+            lmidx = self.unique_LM_idx
+            midx = self.unique_M_idx
+            nidx = self.unique_N_idx
+            lmoutidx = self.inverse_LM_idx
+            moutidx = self.inverse_M_idx
+            noutidx = self.inverse_N_idx
+        else:
+            lmidx = lmoutidx = np.arange(len(modes))
+            midx = moutidx = np.arange(len(modes))
+            nidx = noutidx = np.arange(len(modes))
         if not len(modes):
-            return np.array([]).reshape((len(nodes), 0))
+            return np.array([]).reshape((grid.num_nodes, 0))
 
-        # TODO(#1243): avoid duplicate calculations when mixing derivatives
-        r, t, z = nodes.T
-        l, m, n = modes.T
+        r, t, z = grid.nodes.T
+        _, m, n = modes.T
         lm = modes[:, :2]
 
-        if unique:
-            raise NotImplementedError("Evaluating with unique=True is not yet implemented for SharpFourierZernikeBasis")
+        try:
+            ridx = grid.unique_rho_idx
+            routidx = grid.inverse_rho_idx
+        except AttributeError:
+            ridx = routidx = np.arange(grid.num_nodes)
+        try:
+            tidx = grid.unique_theta_idx
+            toutidx = grid.inverse_theta_idx
+        except AttributeError:
+            tidx = toutidx = np.arange(grid.num_nodes)
+        try:
+            zidx = grid.unique_zeta_idx
+            zoutidx = grid.inverse_zeta_idx
+        except AttributeError:
+            zidx = zoutidx = np.arange(grid.num_nodes)
+
+        r = r[ridx]
+        t = t[tidx]
+        z = z[zidx]
+
+        lm = lm[lmidx]
+        m = m[midx]
+        n = n[nidx]
 
         dr = derivatives[0]
         dt = derivatives[1]
         dz = derivatives[2]
+        if dr != 0 or dt != 0 or dz != 0:
+            raise NotImplementedError("Not yet implemented.")
 
-        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], l, m, dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
+        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
         toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
+
+        rp = rp[routidx][:, lmoutidx]
+        toroidal = toroidal[zoutidx][:, noutidx]
 
         return rp * toroidal
     
