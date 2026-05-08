@@ -183,10 +183,10 @@ def parse_volume(volume, NFP=1, sym=True, spectral_indexing="ansi"):
         raise TypeError("Got unknown surface type {}".format(volume))
 
     bdry_mode = "lcfs"
-    return surface, bdry_mode
+    return volume, bdry_mode
 
 
-def parse_axis(axis, NFP=1, sym=True, surface=None):
+def parse_axis(axis, NFP=1, sym=True, boundary=None):
     """Parse axis input into Curve object.
 
     Parameters
@@ -197,6 +197,8 @@ def parse_axis(axis, NFP=1, sym=True, surface=None):
         Number of field periods of the Equilibrium.
     sym : bool
         Stellarator symmetry of the Equilibrium.
+    boundary: Surface or VolumeRegion
+        Boundary to get axis from is axis is None. 
 
     Returns
     -------
@@ -216,10 +218,14 @@ def parse_axis(axis, NFP=1, sym=True, surface=None):
             name="axis",
         )
     elif axis is None:  # use the center of surface
-        if isinstance(surface, FourierRZToroidalSurface):
-            axis = surface.get_axis()
-        elif isinstance(surface, ZernikeRZToroidalSection):
-            axis = surface.get_axis()
+        if isinstance(boundary, FourierRZToroidalSurface):
+            axis = boundary.get_axis()
+        elif isinstance(boundary, ZernikeRZToroidalSection):
+            axis = boundary.get_axis()
+        elif isinstance(boundary, FourierZernikeRZToroidalVolume):
+            axis = boundary.get_axis()
+        elif isinstance(boundary, GeneralizedZernikeRZToroidalVolume):
+            axis = boundary.get_axis()
     else:
         raise TypeError("Got unknown axis type {}".format(axis))
     return axis

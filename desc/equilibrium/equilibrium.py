@@ -67,6 +67,7 @@ from .utils import (
     parse_axis,
     parse_profile,
     parse_surface,
+    parse_volume,
 )
 
 _kinetic_profile_names = [
@@ -3079,14 +3080,14 @@ class SharpEquilibrium(IOAble, Optimizable):
         self._Z_sym = "sin" if self.sym else False
 
         # surface
-        self._volume, self._bdry_mode = parse_surface(
+        self._volume, self._bdry_mode = parse_volume(
             volume, self.NFP, self.sym, self.spectral_indexing
         )
 
-        ## HERE
-
         # magnetic axis
         self._axis = parse_axis(axis, self.NFP, self.sym, self.surface)
+
+        ## HERE
 
         # resolution
         L = check_nonnegint(L, "L")
