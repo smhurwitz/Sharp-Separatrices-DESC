@@ -22,6 +22,8 @@ from desc.basis import (
     zernike_radial,
     zernike_radial_coeffs,
     zernike_radial_poly,
+    SharpFourierZernikeBasis,
+    GeneralizedFourierZernikeBasis,
 )
 from desc.derivatives import Derivative
 from desc.grid import LinearGrid
@@ -462,3 +464,155 @@ def test_jacobi_jvp():
         )
         f2 = _jacobi(n, alpha, beta, jacobi_arg[:, None], i + 1)
         np.testing.assert_allclose(f1, f2)
+
+class TestSharpFourierZernikeBasis:
+    """Test SharpFourierZernikeBasis class."""
+
+    @pytest.mark.unit
+    def test_initialization_defaults(self):
+        """Test basic initialization with default parameters."""
+        basis = SharpFourierZernikeBasis(L=2, M=3, N=2)
+        assert basis.L == 2
+        assert basis.M == 3
+        assert basis.N == 2
+        assert basis.NFP == 1
+        assert basis.m_b == 1
+        assert basis.n_b == 1
+        np.testing.assert_allclose(basis.β, 0.75 * np.pi)
+        assert basis.sharp_type == "lens"
+
+    @pytest.mark.unit
+    def test_initialization_custom_params(self):
+        """Test initialization with custom parameters."""
+        beta_val = np.pi / 3
+        basis = SharpFourierZernikeBasis(
+            L=3, M=4, N=3, NFP=2, m_b=8, n_b=6, β=beta_val, sharp_type="hypergeometric"
+        )
+        assert basis.L == 3
+        assert basis.M == 4
+        assert basis.N == 3
+        assert basis.NFP == 2
+        assert basis.m_b == 8
+        assert basis.n_b == 6
+        np.testing.assert_allclose(basis.β, beta_val)
+        assert basis.sharp_type == "hypergeometric"
+
+    @pytest.mark.unit
+    def test_evaluate_basic_lens_method(self):
+        """Test evaluate method with lens mapping."""
+        basis = SharpFourierZernikeBasis(L=2, M=3, N=2, m_b=5, n_b=5, sharp_type="lens", number=0)
+        nodes = np.array([[0.5, np.pi / 4, 0.1], [0.3, np.pi / 2, 0.2]])
+        result = basis.evaluate(nodes)
+        assert result.shape[0] == 2
+        assert result.shape[1] == basis.num_modes
+        assert np.isfinite(result).all()
+
+    @pytest.mark.unit
+    def test_evaluate_basic_hypergeometric_method(self):
+        """Test evaluate method with hypergeometric mapping."""
+        basis = SharpFourierZernikeBasis(L=2, M=3, N=2, m_b=5, sharp_type="hypergeometric", number=0)
+        nodes = np.array([[0.5, np.pi / 4, 0.1], [0.3, np.pi / 2, 0.2]])
+        result = basis.evaluate(nodes)
+        assert result.shape[0] == 2
+        assert result.shape[1] == basis.num_modes
+        assert np.isfinite(result).all()
+
+    @pytest.mark.unit
+    def test_evaluate_0_equals_standard_case(self):
+        """Test that evaluate with number=0 matches standard FourierZernikeBasis."""
+        
+        nodes = LinearGrid(L=1, M=1, N=1).nodes
+
+        L, M, N = 2, 5, 12
+        basis_sharp = SharpFourierZernikeBasis(L, M, N, NFP=5, m_b=5, n_b=5, number=0)
+        basis_std = FourierZernikeBasis(L, M, N, NFP=5)
+    
+        A_sharp = np.asarray(basis_sharp.evaluate(nodes))
+        A_std = np.asarray(basis_std.evaluate(nodes))
+
+        print(A_sharp)
+        print(A_std)
+
+        np.testing.assert_allclose(A_sharp, A_std, atol=1e-11)
+
+class TestGeneralizedFourierZernikeBasis:
+    """Test GeneralizedFourierZernikeBasis class."""
+
+    @pytest.mark.unit
+    def test_evaluate_matches_subbasis_sum(self):
+        """Generalized evaluate should equal std + sharp basis evaluations."""
+        std_basis = FourierZernikeBasis(L=2, M=3, N=2, NFP=1)
+        shrp_basis = SharpFourierZernikeBasis(L=2, M=3, N=2, NFP=1, sharp_type="lens", number=0)
+        generalized = GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+        nodes = LinearGrid(L=1, M=1, N=1).nodes
+
+        # Build expected by evaluating each mode from the appropriate basis
+        modes = generalized.modes
+        A_std_full = std_basis.evaluate(nodes)
+        A_sharp_full = shrp_basis.evaluate(nodes)
+        
+        expected = np.empty((len(nodes), len(modes)))
+        for i, mode in enumerate(modes):
+            if mode[0] >= 0:
+                # Standard basis mode: find this mode in std_basis
+                idx = np.where((mode == std_basis.modes).all(axis=1))[0][0]
+                expected[:, i] = A_std_full[:, idx]
+            else:
+                # Sharp basis mode: negate L to find in shrp_basis
+                sharp_mode = mode.copy()
+                sharp_mode[0] = -sharp_mode[0]
+                idx = np.where((sharp_mode == shrp_basis.modes).all(axis=1))[0][0]
+                expected[:, i] = A_sharp_full[:, idx]
+
+        actual = generalized.evaluate(nodes)
+
+        assert actual.shape == expected.shape
+        np.testing.assert_allclose(actual, expected)
+
+    @pytest.mark.unit
+    def test_init_valid(self):
+        """Test successful initialization with valid bases."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, NFP=2)
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, NFP=2, number=0, m_b=2, n_b=2)
+        generalized = GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+        assert generalized.std_basis is std_basis
+        assert generalized.shrp_basis is shrp_basis
+
+    @pytest.mark.unit
+    def test_init_invalid_std_type(self):
+        """Test init fails with invalid std_basis type."""
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1)
+        with pytest.raises(AssertionError, match="std_basis must be a FourierZernikeBasis"):
+            GeneralizedFourierZernikeBasis("invalid", shrp_basis)
+
+    @pytest.mark.unit
+    def test_init_invalid_sharp_type(self):
+        """Test init fails with invalid shrp_basis type."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1)
+        with pytest.raises(AssertionError, match="shrp_basis must be a SharpFourierZernikeBasis"):
+            GeneralizedFourierZernikeBasis(std_basis, "invalid")
+
+    @pytest.mark.unit
+    def test_init_mismatched_nfp(self):
+        """Test init fails with mismatched NFP."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, NFP=1)
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, NFP=2, m_b=2, n_b=2)
+        with pytest.raises(AssertionError, match="std_basis and shrp_basis must have the same NFP"):
+            GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+    @pytest.mark.unit
+    def test_init_mismatched_sym(self):
+        """Test init fails with mismatched sym."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, sym="cos")
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, sym="sin")
+        with pytest.raises(AssertionError, match="std_basis and shrp_basis must have the same sym"):
+            GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+    @pytest.mark.unit
+    def test_init_mismatched_spectral_indexing(self):
+        """Test init fails with mismatched spectral_indexing."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, spectral_indexing="ansi")
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, spectral_indexing="fringe")
+        with pytest.raises(AssertionError, match="std_basis and shrp_basis must have the same spectral_indexing"):
+            GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
