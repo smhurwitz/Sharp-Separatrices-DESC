@@ -621,3 +621,125 @@ class Surface(IOAble, Optimizable, ABC):
             + str(hex(id(self)))
             + " (name={})".format(self.name)
         )
+
+class VolumeRegion(IOAble, Optimizable, ABC):
+    """Abstract base class for 3D regions."""
+
+    _io_attrs_ = ["_name", "_sym", "_L", "_M", "_N"]
+    _static_attrs = Optimizable._static_attrs + ["_name", "_sym", "_L", "_M", "_N"]
+
+    def _set_up(self):
+        """Set things after loading."""
+        if hasattr(self, "_NFP"):
+            self._NFP = int(self._NFP)
+        self._L = int(self._L)
+        self._M = int(self._M)
+        self._N = int(self._N)
+
+    @property
+    def name(self):
+        """str: Name of the volume."""
+        return self.__dict__.setdefault("_name", "")
+
+    @name.setter
+    def name(self, new):
+        self._name = str(new)
+
+    @property
+    def L(self):
+        """int: Maximum radial mode number."""
+        return self._L
+
+    @property
+    def M(self):
+        """int: Maximum poloidal mode number."""
+        return self._M
+
+    @property
+    def N(self):
+        """int: Maximum toroidal mode number."""
+        return self._N
+
+    @property
+    def sym(self):
+        """bool: Whether or not the volume is stellarator symmetric."""
+        return self._sym
+
+    def _compute_orientation(self):
+        """Handedness of coordinate system.
+
+        Returns
+        -------
+        orientation : float
+            +1 for right handed coordinate system (theta increasing CW),
+            -1 for left handed coordinates (theta increasing CCW),
+            or 0 for a singular coordinate system (no volume)
+        """
+        R0 = self.R_lmn[self.R_basis.get_idx(0, 0, 0, False)]
+        R0 = R0 if R0.size > 0 else 0
+        Rsin = self.R_lmn[self.R_basis.get_idx(0, -1, 0, False)]
+        Rsin = Rsin if Rsin.size > 0 else 0
+        Rcos = self.R_lmn[self.R_basis.get_idx(0, 1, 0, False)]
+        Rcos = Rcos if Rcos.size > 0 else 0
+        Zsin = self.Z_lmn[self.Z_basis.get_idx(0, -1, 0, False)]
+        Zsin = Zsin if Zsin.size > 0 else 0
+        Zcos = self.Z_lmn[self.Z_basis.get_idx(0, 1, 0, False)]
+        Zcos = Zcos if Zcos.size > 0 else 0
+        out = np.sign((R0 + Rcos) * (Rsin * Zcos - Rcos * Zsin))
+        assert (out == -1) or (out == 0) or (out == 1)
+        return out
+
+    def _flip_orientation(self):
+        raise NotImplementedError("Will implement later.")
+
+    @abstractmethod
+    def change_resolution(self, *args, **kwargs):
+        """Change the maximum resolution."""
+
+    def compute(
+        self,
+        names,
+        grid=None,
+        params=None,
+        transforms=None,
+        data=None,
+        override_grid=True,
+        **kwargs,
+    ):
+        """Compute the quantity given by name on grid.
+
+        Parameters
+        ----------
+        names : str or array-like of str
+            Name(s) of the quantity(s) to compute.
+        grid : Grid, optional
+            Grid of coordinates to evaluate at. Defaults to a Linear grid for constant
+            rho surfaces or a Quadrature grid for constant zeta surfaces.
+        params : dict of ndarray
+            Parameters from the equilibrium. Defaults to attributes of self.
+        transforms : dict of Transform
+            Transforms for R, Z, lambda, etc. Default is to build from grid
+        data : dict of ndarray
+            Data computed so far, generally output from other compute functions
+        override_grid : bool
+            If True, override the user supplied grid if necessary and use a full
+            resolution grid to compute quantities and then downsample to user requested
+            grid. If False, uses only the user specified grid, which may lead to
+            inaccurate values for surface or volume averages.
+
+        Returns
+        -------
+        data : dict of ndarray
+            Computed quantity and intermediate variables.
+
+        """
+        raise NotImplementedError("Will implement later. See my notes on how this functions to do so. It'd be messy, but in order to interface well with DESC's dependency registry it coule be a nice idea to subclass `Surface`.")
+
+    def __repr__(self):
+        """Get the string form of the object."""
+        return (
+            type(self).__name__
+            + " at "
+            + str(hex(id(self)))
+            + " (name={})".format(self.name)
+        )
