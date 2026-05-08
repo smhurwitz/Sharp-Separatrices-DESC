@@ -2867,3 +2867,375 @@ class EquilibriaFamily(IOAble, MutableSequence):
                 "Members of EquilibriaFamily should be of type Equilibrium or subclass."
             )
         self._equilibria.insert(i, new_item)
+
+class SharpEquilibrium(IOAble, Optimizable):
+    """SharpEquilibrium is an object that represents a plasma equilibrium and
+    provide an accurate representation of separatrices with sharp corners.
+
+    It contains information about a plasma state, including the shapes of flux surfaces
+    and profile inputs. It can compute additional information, such as the magnetic
+    field and plasma currents, as well as "solving" itself by finding the equilibrium
+    fields, and perturbing those fields to find nearby equilibria.
+
+    Note that any passed-in profiles with resolution lower than eq.L will be
+    automatically increased in resolution to match eq.L. Higher resolution profiles will
+    be left untouched.
+
+    Parameters
+    ----------
+    Psi : float (optional)
+        total toroidal flux (in Webers) within LCFS. Default 1.0
+    NFP : int (optional)
+        number of field periods Default ``volume.NFP`` or 1
+    L_std : int (optional)
+        Radial resolution of standard basis. Default 2*M_std for ``spectral_indexing=='fringe'``, else M_std
+    M_std : int (optional)
+        Poloidal resolution of standard basis. Default volume.M_std or 1
+    N_std : int (optional)
+        Toroidal resolution of standard basis. Default volume.N_std or 0
+    L_shp : int (optional)
+        Radial resolution of sharp basis. Default 2*M_shp for ``spectral_indexing=='fringe'``, else M_std
+    M_shp : int (optional)
+        Poloidal resolution of sharp basis. Default volume.M_shp or 1
+    N_shp : int (optional)
+        Toroidal resolution of sharp basis. Default volume.N_shp or 0
+    L_grid : int (optional)
+        resolution of real space nodes in radial direction
+    M_grid : int (optional)
+        resolution of real space nodes in poloidal direction
+    N_grid : int (optional)
+        resolution of real space nodes in toroidal direction
+    pressure : Profile or ndarray shape(k,2) (optional)
+        Pressure profile or array of mode numbers and spectral coefficients.
+        Default is a PowerSeriesProfile with zero pressure
+    iota : Profile or ndarray shape(k,2) (optional)
+        Rotational transform profile or array of mode numbers and spectral coefficients
+    current : Profile or ndarray shape(k,2) (optional)
+        Toroidal current profile or array of mode numbers and spectral coefficients
+        Default is a PowerSeriesProfile with zero toroidal current
+    electron_temperature : Profile or ndarray shape(k,2) (optional)
+        Electron temperature (eV) profile or array of mode numbers and spectral
+        coefficients. Must be supplied with corresponding density.
+        Cannot specify both kinetic profiles and pressure.
+    electron_density : Profile or ndarray shape(k,2) (optional)
+        Electron density (m^-3) profile or array of mode numbers and spectral
+        coefficients. Must be supplied with corresponding temperature.
+        Cannot specify both kinetic profiles and pressure.
+    ion_temperature : Profile or ndarray shape(k,2) (optional)
+        Ion temperature (eV) profile or array of mode numbers and spectral coefficients.
+        Default is to assume electrons and ions have the same temperature.
+    atomic_number : Profile or ndarray shape(k,2) (optional)
+        Effective atomic number (Z_eff) profile or ndarray of mode numbers and spectral
+        coefficients. Default is 1
+    anisotropy : Profile or ndarray
+        Anisotropic pressure profile or array of mode numbers and spectral coefficients.
+        Default is a PowerSeriesProfile with zero anisotropic pressure.
+    volume: VolumeRegion (optional)
+        Fixed boundary surface shape, as a VolumeRegion object.
+    axis : Curve or ndarray shape(k,3) (optional)
+        Initial guess for the magnetic axis as a Curve object or ndarray
+        of mode numbers and spectral coefficients of the form [n, R, Z].
+        Default is the centroid of the surface.
+    sym : bool (optional)
+        Whether to enforce stellarator symmetry. Default surface.sym or False.
+    spectral_indexing : str (optional)
+        Type of Zernike indexing scheme to use. Default ``'ansi'``
+    check_orientation : bool
+        ensure that this equilibrium has a right handed orientation. Do not set to False
+        unless you are sure the parameterization you have given is right handed
+        (ie, e_theta x e_zeta points outward from the surface).
+    ensure_nested : bool
+        If True, and the default initial guess does not produce nested surfaces,
+        run a small optimization problem to attempt to refine initial guess to improve
+        coordinate mapping.
+
+    """
+
+    _io_attrs_ = [
+        "_sym",
+        "_R_sym",
+        "_Z_sym",
+        "_Psi",
+        "_NFP",
+        "_L_std",
+        "_M_std",
+        "_N_std",
+        "_L_shp",
+        "_M_shp",
+        "_N_shp",
+        "_R_lmn",
+        "_Z_lmn",
+        "_L_lmn",
+        "_R_basis",
+        "_Z_basis",
+        "_L_basis",
+        "_volume",
+        "_axis",
+        "_pressure",
+        "_iota",
+        "_current",
+        "_electron_temperature",
+        "_electron_density",
+        "_ion_temperature",
+        "_atomic_number",
+        "_anisotropy",
+        "_spectral_indexing",
+        "_bdry_mode",
+        "_L_grid",
+        "_M_grid",
+        "_N_grid",
+    ]
+    _static_attrs = Optimizable._static_attrs + [
+        "_sym",
+        "_R_sym",
+        "_Z_sym",
+        "_NFP",
+        "_L_std",
+        "_M_std",
+        "_N_std",
+        "_L_shp",
+        "_M_shp",
+        "_N_shp",
+        "_L_grid",
+        "_M_grid",
+        "_N_grid",
+        "_spectral_indexing",
+        "_bdry_mode",
+        "_R_basis",
+        "_Z_basis",
+        "_L_basis",
+    ]
+
+    @execute_on_cpu
+    def __init__(
+        self,
+        Psi=1.0,
+        NFP=None,
+        L_std=None,
+        M_std=None,
+        N_std=None,
+        L_shp=None,
+        M_shp=None,
+        N_shp=None,
+        L_grid=None,
+        M_grid=None,
+        N_grid=None,
+        pressure=None,
+        iota=None,
+        current=None,
+        electron_temperature=None,
+        electron_density=None,
+        ion_temperature=None,
+        atomic_number=None,
+        anisotropy=None,
+        volume=None,
+        axis=None,
+        sym=None,
+        spectral_indexing=None,
+        check_orientation=True,
+        ensure_nested=True,
+        **kwargs,
+    ):
+        errorif(
+            not isinstance(float(Psi), numbers.Real),
+            ValueError,
+            f"Psi should be a real integer or float, got {type(Psi)}",
+        )
+        self._Psi = jnp.float64(float(Psi))
+
+        errorif(
+            spectral_indexing
+            not in [
+                None,
+                "ansi",
+                "fringe",
+            ],
+            ValueError,
+            "spectral_indexing should be one of 'ansi', 'fringe', None, got "
+            + f"{spectral_indexing}",
+        )
+        self._spectral_indexing = setdefault(
+            spectral_indexing, getattr(volume, "spectral_indexing", "ansi")
+        )
+
+        NFP = check_posint(NFP, "NFP")
+        self._NFP = int(
+            setdefault(NFP, getattr(volume, "NFP", getattr(axis, "NFP", 1)))
+        )
+
+        # stellarator symmetry for bases
+        errorif(
+            sym
+            not in [
+                None,
+                True,
+                False,
+            ],
+            ValueError,
+            f"sym should be one of True, False, None, got {sym}",
+        )
+        self._sym = bool(setdefault(sym, getattr(volume, "sym", False)))
+        self._R_sym = "cos" if self.sym else False
+        self._Z_sym = "sin" if self.sym else False
+
+        # surface
+        self._volume, self._bdry_mode = parse_surface(
+            volume, self.NFP, self.sym, self.spectral_indexing
+        )
+
+        ## HERE
+
+        # magnetic axis
+        self._axis = parse_axis(axis, self.NFP, self.sym, self.surface)
+
+        # resolution
+        L = check_nonnegint(L, "L")
+        M = check_nonnegint(M, "M")
+        N = check_nonnegint(N, "N")
+        L_grid = check_nonnegint(L_grid, "L_grid")
+        M_grid = check_nonnegint(M_grid, "M_grid")
+        N_grid = check_nonnegint(N_grid, "N_grid")
+
+        self._N = int(setdefault(N, self.surface.N))
+        self._M = int(setdefault(M, self.surface.M))
+        self._L = int(
+            setdefault(
+                L,
+                max(
+                    self.surface.L,
+                    self.M if (self.spectral_indexing == "ansi") else 2 * self.M,
+                ),
+            )
+        )
+        self._L_grid = setdefault(L_grid, 2 * self.L)
+        self._M_grid = setdefault(M_grid, 2 * self.M)
+        self._N_grid = setdefault(N_grid, 2 * self.N)
+
+        self._surface.change_resolution(self.L, self.M, self.N, sym=self.sym)
+        self._axis.change_resolution(self.N, sym=self.sym)
+
+        # bases
+        self._R_basis = FourierZernikeBasis(
+            L=self.L,
+            M=self.M,
+            N=self.N,
+            NFP=self.NFP,
+            sym=self._R_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+        self._Z_basis = FourierZernikeBasis(
+            L=self.L,
+            M=self.M,
+            N=self.N,
+            NFP=self.NFP,
+            sym=self._Z_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+        self._L_basis = FourierZernikeBasis(
+            L=self.L,
+            M=self.M,
+            N=self.N,
+            NFP=self.NFP,
+            sym=self._Z_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+
+        # profiles
+        self._pressure = None
+        self._iota = None
+        self._current = None
+        self._electron_temperature = None
+        self._electron_density = None
+        self._ion_temperature = None
+        self._atomic_number = None
+
+        if current is None and iota is None:
+            current = 0
+        use_kinetic = any(
+            [electron_temperature is not None, electron_density is not None]
+        )
+        errorif(
+            current is not None and iota is not None,
+            ValueError,
+            "Cannot specify both iota and current profiles.",
+        )
+        errorif(
+            ((pressure is not None) or (anisotropy is not None)) and use_kinetic,
+            ValueError,
+            "Cannot specify both pressure and kinetic profiles.",
+        )
+        errorif(
+            use_kinetic and (electron_temperature is None or electron_density is None),
+            ValueError,
+            "Must give at least electron temperature and density to use "
+            + "kinetic profiles.",
+        )
+        if use_kinetic and atomic_number is None:
+            atomic_number = 1
+        if use_kinetic and ion_temperature is None:
+            ion_temperature = electron_temperature
+        if not use_kinetic and pressure is None:
+            pressure = 0
+
+        self.electron_temperature = parse_profile(
+            electron_temperature, "electron temperature"
+        )
+        self.electron_density = parse_profile(electron_density, "electron density")
+        self.ion_temperature = parse_profile(ion_temperature, "ion temperature")
+        self.atomic_number = parse_profile(atomic_number, "atomic number")
+        self.pressure = parse_profile(pressure, "pressure")
+        self.anisotropy = parse_profile(anisotropy, "anisotropy")
+        self._iota = self._current = None
+        self.iota = parse_profile(iota, "iota")
+        self.current = parse_profile(current, "current")
+
+        # ensure profiles have the right resolution
+        for profile in [
+            "pressure",
+            "iota",
+            "current",
+            "electron_temperature",
+            "electron_density",
+            "ion_temperature",
+            "atomic_number",
+            "anisotropy",
+        ]:
+            p = getattr(self, profile)
+            ensure_consistent_profile_eq_resolution(p, self, name=profile)
+
+        # ensure number of field periods agree before setting guesses
+        eq_NFP = self.NFP
+        surf_NFP = self.surface.NFP if hasattr(self.surface, "NFP") else self.NFP
+        axis_NFP = self._axis.NFP
+        errorif(
+            not (eq_NFP == surf_NFP == axis_NFP),
+            ValueError,
+            "Unequal number of field periods for equilibrium "
+            + f"{eq_NFP}, surface {surf_NFP}, and axis {axis_NFP}",
+        )
+
+        # make sure symmetry agrees
+        errorif(
+            self.sym != self.surface.sym,
+            ValueError,
+            "Surface and Equilibrium must have the same symmetry",
+        )
+        self._R_lmn = np.zeros(self.R_basis.num_modes)
+        self._Z_lmn = np.zeros(self.Z_basis.num_modes)
+        self._L_lmn = np.zeros(self.L_basis.num_modes)
+
+        if ("R_lmn" in kwargs) or ("Z_lmn" in kwargs):
+            assert ("R_lmn" in kwargs) and ("Z_lmn" in kwargs), "Must give both R and Z"
+            self.R_lmn = kwargs.pop("R_lmn")
+            self.Z_lmn = kwargs.pop("Z_lmn")
+            self.L_lmn = kwargs.pop("L_lmn", jnp.zeros(self.L_basis.num_modes))
+        else:
+            self.set_initial_guess(ensure_nested=ensure_nested)
+        if check_orientation:
+            ensure_positive_jacobian(self)
+        if kwargs.get("check_kwargs", True):
+            errorif(
+                len(kwargs),
+                TypeError,
+                f"Equilibrium got unexpected kwargs: {kwargs.keys()}",
+            )

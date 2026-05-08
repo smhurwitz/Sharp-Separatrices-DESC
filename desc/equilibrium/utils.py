@@ -10,6 +10,9 @@ from desc.geometry import (
     FourierRZToroidalSurface,
     Surface,
     ZernikeRZToroidalSection,
+    VolumeRegion,
+    FourierZernikeRZToroidalVolume,
+    GeneralizedZernikeRZToroidalVolume,
 )
 from desc.profiles import PowerSeriesProfile, _Profile
 from desc.utils import warnif
@@ -145,6 +148,41 @@ def parse_surface(surface, NFP=1, sym=True, spectral_indexing="ansi"):
         bdry_mode = "lcfs"
     if isinstance(surface, ZernikeRZToroidalSection):
         bdry_mode = "poincare"
+    return surface, bdry_mode
+
+
+def parse_volume(volume, NFP=1, sym=True, spectral_indexing="ansi"):
+    """Parse volume input into VolumeRegion object.
+
+    Parameters
+    ----------
+    volume : VolumeRegion, ndarray, None
+        VolumeRegion to parse.
+    NFP : int
+        Number of field periods of the Equilibrium.
+    sym : bool
+        Stellarator symmetry of the Equilibrium.
+    spectral_indexing : {"ansi", "fringe"}
+        Spectral indexing scheme of the Equilibrium.
+
+    Returns
+    -------
+    volume : VolumeRegion
+        Parsed volume object, either FourierZernikeRZToroidalVolume or
+        GeneralizedZernikeRZToroidalVolume.
+    bdry_mode : str
+        Only "lcfs" currently
+    """
+    if isinstance(volume, VolumeRegion):
+        volume = volume
+    elif volume is None:
+        volume = FourierZernikeRZToroidalVolume(NFP=NFP, sym=sym)
+    elif isinstance(volume, (np.ndarray, jnp.ndarray)):
+        raise NotImplementedError("Only a `VolumeRegion` input is currently supported.")
+    else:
+        raise TypeError("Got unknown surface type {}".format(volume))
+
+    bdry_mode = "lcfs"
     return surface, bdry_mode
 
 
