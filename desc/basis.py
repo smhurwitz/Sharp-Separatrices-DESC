@@ -1506,23 +1506,27 @@ class GeneralizedFourierZernikeBasis:
         "_spectral_indexing",
     ]
 
-    def __init__(self, std_basis, shrp_basis):
-        # copy from FourierZernikeBasis # TODO
-
+    def __init__(self, std_basis, shp_basis):
         assert isinstance(std_basis, FourierZernikeBasis), "std_basis must be a FourierZernikeBasis"
-        assert isinstance(shrp_basis, SharpFourierZernikeBasis), "shrp_basis must be a SharpFourierZernikeBasis"
+        assert isinstance(shp_basis, SharpFourierZernikeBasis), "shrp_basis must be a SharpFourierZernikeBasis"
         self._std_basis = std_basis
-        self._shrp_basis = shrp_basis
-        assert std_basis.NFP == shrp_basis.NFP, "std_basis and shrp_basis must have the same NFP"
+        self._shp_basis = shp_basis
+        assert std_basis.NFP == shp_basis.NFP, "std_basis and shrp_basis must have the same NFP"
         self._NFP = self._std_basis.NFP
-        assert std_basis.sym == shrp_basis.sym, "std_basis and shrp_basis must have the same sym"
-        assert std_basis.N == shrp_basis.N, "std_basis and shrp_basis must have the same N"
-        assert std_basis.spectral_indexing == shrp_basis.spectral_indexing, "std_basis and shrp_basis must have the same spectral_indexing"
+        assert std_basis.sym == shp_basis.sym, "std_basis and shrp_basis must have the same sym"
+        assert std_basis.N == shp_basis.N, "std_basis and shrp_basis must have the same N"
+        assert std_basis.spectral_indexing == shp_basis.spectral_indexing, "std_basis and shrp_basis must have the same spectral_indexing"
 
         self._modes = self._get_modes()
         self._enforce_symmetry()
         self._sort_modes()
         self._modes = self._modes.astype(int)
+        self._L = self.std_basis.L
+        self._M = self.std_basis.M
+        self._N = self.std_basis.N
+        self._L_shp = self.shp_basis.L
+        self._M_shp = self.shp_basis.M
+        self._N_shp = self.shp_basis.N
 
     def get_boundary_modes(self, fix_MA=True):
         """Gets all modes that must be frozen during a fixed-boundary 
@@ -1605,7 +1609,7 @@ class GeneralizedFourierZernikeBasis:
         sharp_mask = ~std_mask
         sharp_modes = modes[sharp_mask]
         sharp_modes[:, 0] = -sharp_modes[:, 0]
-        A_sharp = self.shrp_basis.evaluate(grid, derivatives, modes=sharp_modes)
+        A_sharp = self.shp_basis.evaluate(grid, derivatives, modes=sharp_modes)
         A_std = self.std_basis.evaluate(grid, derivatives, modes=std_modes)
         A = np.empty((len(grid.nodes), len(modes)))
         A[:, std_mask] = A_std
@@ -1615,10 +1619,62 @@ class GeneralizedFourierZernikeBasis:
     
     def _get_modes(self):
         std_modes = self._std_basis.modes
-        shp_modes = self._shrp_basis.modes.copy()
+        shp_modes = self._shp_basis.modes.copy()
         shp_modes[:,0] = -shp_modes[:,0]
         shp_modes = shp_modes[shp_modes[:, 0] != 0] # remove duplicate at l=0
         return np.vstack((shp_modes, std_modes))
+    
+    def change_resolution(self, L, M, N, L_shp, M_shp, N_shp, NFP=None, sym=None):
+        """Change resolution of the basis to the given resolutions.
+
+        Parameters
+        ----------
+        L : int
+            Maximum radial resolution.
+        M : int
+            Maximum poloidal resolution.
+        N : int
+            Maximum toroidal resolution.
+        L_shp : int
+            Maximum radial resolution of sharp part.
+        M_shp : int
+            Maximum poloidal resolution of sharp part.
+        N_shp : int
+            Maximum toroidal resolution of sharp part.
+        NFP : int
+            Number of field periods.
+        sym : bool
+            Whether to enforce stellarator symmetry.
+
+        Returns
+        -------
+        None
+
+        """
+        NFP = check_posint(NFP, "NFP")
+        self._NFP = NFP if NFP is not None else self.NFP
+        if (
+            L != self.L
+            or M != self.M
+            or N != self.N
+            or L_shp != self.L_shp
+            or M_shp != self.M_shp
+            or N_shp != self.N_shp
+            or (sym is not None and sym != self.sym)
+        ):
+            self._L = check_nonnegint(L, "L", False)
+            self._M = check_nonnegint(M, "M", False)
+            self._N = check_nonnegint(N, "N", False)
+            self._L_shp = check_nonnegint(L_shp, "L_shp", False)
+            self._M_shp = check_nonnegint(M_shp, "M_shp", False)
+            self._N_shp = check_nonnegint(N_shp, "N_shp", False)
+            self._sym = sym if sym is not None else self.sym
+
+            self._std_basis.change_resolution(L, M, N, NFP, sym)
+            self._shp_basis.change_resolution(L_shp, M_shp, N_shp, NFP, sym)
+
+            self._modes = self._get_modes()
+            self._set_up()
     
     def _sort_modes(self):
         """Sorts modes for use with FFT."""
@@ -1700,9 +1756,9 @@ class GeneralizedFourierZernikeBasis:
         return self._fft_toroidal
     
     @property
-    def shrp_basis(self):
+    def shp_basis(self):
         """The `SharpFourierZernikeBasis` component of the generalized basis."""
-        return self._shrp_basis
+        return self._shp_basis
     
     @property
     def std_basis(self):
@@ -1714,6 +1770,37 @@ class GeneralizedFourierZernikeBasis:
         """str: Type of symmetry."""
         # one of: {'even', 'sin', 'cos', 'cos(t)', False}
         return self.__dict__.setdefault("_sym", False)
+    
+    @property
+    def L(self):
+        """int: Maximum radial mode number."""
+        return self._L
+    
+    @property
+    def M(self):
+        """int: Maximum poloidal mode number."""
+        return self._M
+    
+    @property
+    def N(self):
+        """int: Maximum toroidal mode number."""
+        return self._N
+    
+    @property
+    def L_shp(self):
+        """int: Maximum radial mode number of sharp piece."""
+        return self._L_shp
+    
+    @property
+    def M_shp(self):
+        """int: Maximum poloidal mode number of sharp piece."""
+        return self._M_shp
+    
+    @property
+    def N_shp(self):
+        """int: Maximum toroidal mode number of sharp piece."""
+        return self._N_shp
+
     
     def __repr__(self):
         """Get the string form of the object."""

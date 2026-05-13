@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 
+from desc.basis import FourierZernikeBasis, SharpFourierZernikeBasis
 from desc.geometry.volume import FourierZernikeRZToroidalVolume, GeneralizedZernikeRZToroidalVolume
 from desc.grid import Grid
 from desc.transform import Transform
@@ -199,6 +200,74 @@ class TestGeneralizedZernikeRZToroidalVolume:
         np.testing.assert_allclose(Z, [0.1])
 
     @pytest.mark.unit
+    def test_resolution_properties(self):
+        """Test resolution getters for generalized toroidal volume."""
+        vol = GeneralizedZernikeRZToroidalVolume(
+            NFP=3,
+            L=2,
+            M=3,
+            N=1,
+            L_shp=4,
+            M_shp=5,
+            N_shp=1,
+            sym=True,
+            m_b=3,
+            n_b=3
+        )
+
+        assert vol.NFP == 3
+        assert vol.L == 2
+        assert vol.M == 3
+        assert vol.N == 1
+        assert vol.L_shp == 4
+        assert vol.M_shp == 5
+        assert vol.N_shp == 1
+
+    @pytest.mark.unit
+    def test_change_resolution(self):
+        """Test changing the resolution of the generalized toroidal volume."""
+        vol = GeneralizedZernikeRZToroidalVolume(
+            NFP=1,
+            L=1,
+            M=1,
+            N=0,
+            L_shp=1,
+            M_shp=1,
+            N_shp=0,
+            sym=False,
+        )
+
+        vol.change_resolution(
+            L=2,
+            M=3,
+            N=0,
+            L_shp=2,
+            M_shp=3,
+            N_shp=0,
+            NFP=1,
+            sym=False,
+        )
+
+        assert vol.NFP == 1
+        assert vol.L == 2
+        assert vol.M == 3
+        assert vol.N == 0
+        assert vol.L_shp == 2
+        assert vol.M_shp == 3
+        assert vol.N_shp == 0
+
+        expected_std = FourierZernikeBasis(L=2, M=3, N=0, NFP=2, sym=False)
+        expected_sharp = SharpFourierZernikeBasis(L=2, M=3, N=0, NFP=2, m_b=2, n_b=2, sharp_type="lens", sym=False)
+        expected_sharp_modes = expected_sharp.modes.copy()
+        expected_sharp_modes[:, 0] = -expected_sharp_modes[:, 0]
+        expected_sharp_modes = expected_sharp_modes[expected_sharp_modes[:, 0] != 0]
+        expected_modes = np.vstack((expected_sharp_modes, expected_std.modes))
+        expected_modes = expected_modes[np.lexsort((expected_modes[:, 1], expected_modes[:, 0], expected_modes[:, 2]))]
+
+        np.testing.assert_array_equal(vol.R_basis.modes, expected_modes)
+        np.testing.assert_array_equal(vol.Z_basis.modes, expected_modes)
+
+    @pytest.mark.unit
     def test_get_coeffs_single_mode_std(self):
         """Test get_coeffs for a single mode."""
         R_lmn = np.array([5, 2, 1, 0.3])
@@ -315,8 +384,8 @@ class TestGeneralizedZernikeRZToroidalVolume:
 
         Rvol_trans_std = Transform(grid, vol.R_basis.std_basis)
         Zvol_trans_std = Transform(grid, vol.Z_basis.std_basis)
-        Rvol_trans_sharp = Transform(grid, vol.R_basis.shrp_basis, method="jitable")
-        Zvol_trans_sharp = Transform(grid, vol.Z_basis.shrp_basis, method="jitable")
+        Rvol_trans_sharp = Transform(grid, vol.R_basis.shp_basis, method="jitable")
+        Zvol_trans_sharp = Transform(grid, vol.Z_basis.shp_basis, method="jitable")
         Rax_trans = Transform(grid, axis.R_basis)
         Zax_trans = Transform(grid, axis.Z_basis)
 

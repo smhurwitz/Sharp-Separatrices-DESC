@@ -272,6 +272,58 @@ class FourierZernikeRZToroidalVolume(Volume):
         curve = FourierRZCurve(R_n, Z_n, modes_R, modes_Z)
         return curve
     
+    @execute_on_cpu
+    def change_resolution(self, *args, **kwargs):
+        """Change the maximum radial, poloidal, and toroidal resolution."""
+        assert (
+            ((len(args) in [3]) and len(kwargs) == 0)
+            or ((len(args) in [3]) and len(kwargs) in [1, 2])
+            or (len(args) == 0)
+        ), (
+            "change_resolution should be called with (L,M,N) "
+            + "positional arguments or only keyword arguments."
+        )
+        L = kwargs.pop("L", None)
+        M = kwargs.pop("M", None)
+        N = kwargs.pop("N", None)
+        NFP = kwargs.pop("NFP", None)
+        sym = kwargs.pop("sym", None)
+        assert len(kwargs) == 0, "change_resolution got unexpected kwarg: {kwargs}"
+
+        if len(args) == 3:
+            L, M, N = args
+
+        L = check_nonnegint(L, "L")
+        M = check_nonnegint(M, "M")
+        N = check_nonnegint(N, "N")
+        NFP = check_posint(NFP, "NFP")
+        self._NFP = int(NFP if NFP is not None else self.NFP)
+
+        if (
+            ((N is not None) and (N != self.N))
+            or ((M is not None) and (M != self.M))
+            or ((L is not None) and (L != self.L))
+            or (NFP is not None)
+            or ((sym is not None) and (sym != self.sym))
+        ):
+            self._sym = sym if sym is not None else self.sym
+            L = int(L if L is not None else self.L)
+            M = int(M if M is not None else self.M)
+            N = int(N if N is not None else self.N)
+            R_modes_old = self.R_basis.modes
+            Z_modes_old = self.Z_basis.modes
+            self.R_basis.change_resolution(
+                L=L, M=M, N=N, NFP=self.NFP, sym="cos" if self.sym else self.sym
+            )
+            self.Z_basis.change_resolution(
+                L=L, M=M, N=N, NFP=self.NFP, sym="sin" if self.sym else self.sym
+            )
+            self.R_lmn = copy_coeffs(self.R_lmn, R_modes_old, self.R_basis.modes)
+            self.Z_lmn = copy_coeffs(self.Z_lmn, Z_modes_old, self.Z_basis.modes)
+            self._L = L
+            self._M = M
+            self._N = N
+    
 class GeneralizedZernikeRZToroidalVolume(Volume):
     """Toroidal volume represented by Generalized Fourier-Zernike polynomials.
     
@@ -392,9 +444,9 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
         self._L = setdefault(L, max(LR, LZ))
         self._M = setdefault(M, max(MR, MZ))
         self._N = setdefault(N, max(NR, NZ, NR_sharp, NZ_sharp))
-        self._Lsh = setdefault(L_shp, max(LR_sharp, LZ_sharp))
-        self._Msh = setdefault(M_shp, max(MR_sharp, MZ_sharp))
-        self._Nsh = self._N
+        self._L_shp = setdefault(L_shp, max(LR_sharp, LZ_sharp))
+        self._M_shp = setdefault(M_shp, max(MR_sharp, MZ_sharp))
+        self._N_shp = self._N
         self._NFP = NFP
 
         if sym == "auto":
@@ -411,20 +463,20 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="cos" if sym else False
         )
         R_basis_sharp = SharpFourierZernikeBasis(
-            L=self._Lsh, M=self._Msh, N=self._Nsh, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False
         )
         Z_basis_std = FourierZernikeBasis(
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="sin" if sym else False
         )
         Z_basis_sharp = SharpFourierZernikeBasis(
-            L=self._Lsh, M=self._Msh, N=self._Nsh, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False
         )
 
         self._R_basis = GeneralizedFourierZernikeBasis(
-            std_basis = R_basis_std, shrp_basis = R_basis_sharp
+            std_basis = R_basis_std, shp_basis = R_basis_sharp
         )
         self._Z_basis = GeneralizedFourierZernikeBasis(
-            std_basis = Z_basis_std, shrp_basis = Z_basis_sharp
+            std_basis = Z_basis_std, shp_basis = Z_basis_sharp
         )
 
         self._R_lmn = copy_coeffs(R_lmn, modes_R, self.R_basis.modes)
@@ -591,3 +643,71 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
 
         curve = FourierRZCurve(R_n, Z_n, modes_R, modes_Z)
         return curve
+    
+    @execute_on_cpu
+    def change_resolution(self, *args, **kwargs):
+        """Change the maximum radial, poloidal, and toroidal resolution."""
+        assert (
+            ((len(args) in [6]) and len(kwargs) == 0)
+            or ((len(args) in [6]) and len(kwargs) in [1, 2])
+            or (len(args) == 0)
+        ), (
+            "change_resolution should be called with (L,M,N,L_shp,M_shp,N_shp) "
+            + "positional arguments or only keyword arguments."
+        )
+        L = kwargs.pop("L", None)
+        M = kwargs.pop("M", None)
+        N = kwargs.pop("N", None)
+        L_shp = kwargs.pop("L_shp", None)
+        M_shp = kwargs.pop("M_shp", None)
+        N_shp = kwargs.pop("N_shp", None)
+        NFP = kwargs.pop("NFP", None)
+        sym = kwargs.pop("sym", None)
+        assert len(kwargs) == 0, "change_resolution got unexpected kwarg: {kwargs}"
+
+        if len(args) == 6:
+            L, M, N, L_shp, M_shp, N_shp = args
+
+        L = check_nonnegint(L, "L")
+        M = check_nonnegint(M, "M")
+        N = check_nonnegint(N, "N")
+        L_shp = check_nonnegint(L_shp, "L_shp")
+        M_shp = check_nonnegint(M_shp, "M_shp")
+        N_shp = check_nonnegint(N_shp, "N_shp")
+        NFP = check_posint(NFP, "NFP")
+        self._NFP = int(NFP if NFP is not None else self.NFP)
+
+        if (
+            ((N is not None) and (N != self.N))
+            or ((M is not None) and (M != self.M))
+            or ((L is not None) and (L != self.L))
+            or ((N_shp is not None) and (N_shp != self.N_shp))
+            or ((M_shp is not None) and (M_shp != self.M_shp))
+            or ((L_shp is not None) and (L_shp != self.L_shp))
+            or (NFP is not None)
+            or ((sym is not None) and (sym != self.sym))
+        ):
+            self._sym = sym if sym is not None else self.sym
+            L = int(L if L is not None else self.L)
+            M = int(M if M is not None else self.M)
+            N = int(N if N is not None else self.N)
+            L_shp = int(L_shp if L_shp is not None else self.L_shp)
+            M_shp = int(M_shp if M_shp is not None else self.M_shp)
+            N_shp = int(N_shp if N_shp is not None else self.N_shp)
+            R_modes_old = self.R_basis.modes
+            Z_modes_old = self.Z_basis.modes
+            self.R_basis.change_resolution(
+                L=L, M=M, N=N, L_shp=L_shp, M_shp=M_shp, N_shp=N_shp, NFP=self.NFP, sym="cos" if self.sym else self.sym
+            )
+            self.Z_basis.change_resolution(
+                L=L, M=M, N=N, L_shp=L_shp, M_shp=M_shp, N_shp=N_shp, NFP=self.NFP, sym="sin" if self.sym else self.sym
+            )
+            self.R_lmn = copy_coeffs(self.R_lmn, R_modes_old, self.R_basis.modes)
+            self.Z_lmn = copy_coeffs(self.Z_lmn, Z_modes_old, self.Z_basis.modes)
+            self._L = L
+            self._M = M
+            self._N = N
+            self._L_shp = L_shp
+            self._M_shp = M_shp
+            self._N_shp = N_shp
+    

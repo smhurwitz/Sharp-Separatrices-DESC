@@ -577,7 +577,63 @@ class TestGeneralizedFourierZernikeBasis:
         shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, NFP=2, number=0, m_b=2, n_b=2)
         generalized = GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
         assert generalized.std_basis is std_basis
-        assert generalized.shrp_basis is shrp_basis
+        assert generalized.shp_basis is shrp_basis
+
+    @pytest.mark.unit
+    def test_resolution_properties(self):
+        """Test resolution getters for generalized Fourier-Zernike basis."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, NFP=3, sym=False)
+        shrp_basis = SharpFourierZernikeBasis(
+            L=2, M=3, N=1, NFP=3, number=0, m_b=3, n_b=3, sym=False
+        )
+        generalized = GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+        assert generalized.L == 1
+        assert generalized.M == 2
+        assert generalized.N == 1
+        assert generalized.L_shp == 2
+        assert generalized.M_shp == 3
+        assert generalized.N_shp == 1
+        assert generalized.NFP == 3
+        assert generalized.sym is False
+
+    @pytest.mark.unit
+    def test_change_resolution(self):
+        """Test changing the resolution of the generalized basis."""
+        std_basis = FourierZernikeBasis(L=1, M=2, N=1, NFP=1)
+        shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, NFP=1, number=0, m_b=2, n_b=2)
+        generalized = GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+        generalized.change_resolution(
+            L=2,
+            M=3,
+            N=0,
+            L_shp=2,
+            M_shp=3,
+            N_shp=0,
+            NFP=2,
+            sym="cos",
+        )
+
+        assert generalized.L == 2
+        assert generalized.M == 3
+        assert generalized.N == 0
+        assert generalized.L_shp == 2
+        assert generalized.M_shp == 3
+        assert generalized.N_shp == 0
+        assert generalized.NFP == 2
+        assert generalized.sym == "cos"
+
+        expected_std = FourierZernikeBasis(L=2, M=3, N=0, NFP=2, sym="cos")
+        expected_shrp = SharpFourierZernikeBasis(
+            L=2, M=3, N=0, NFP=2, number=0, m_b=2, n_b=2, sym="cos"
+        )
+        expected_shrp_modes = expected_shrp.modes.copy()
+        expected_shrp_modes[:, 0] = -expected_shrp_modes[:, 0]
+        expected_shrp_modes = expected_shrp_modes[expected_shrp_modes[:, 0] != 0]
+        expected_modes = np.vstack((expected_shrp_modes, expected_std.modes))
+        expected_modes = expected_modes[np.lexsort((expected_modes[:, 1], expected_modes[:, 0], expected_modes[:, 2]))]
+        np.testing.assert_array_equal(generalized.modes, expected_modes)
 
     @pytest.mark.unit
     def test_init_invalid_std_type(self):
