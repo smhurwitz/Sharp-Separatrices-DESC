@@ -632,9 +632,6 @@ class VolumeRegion(IOAble, Optimizable, ABC):
         """Set things after loading."""
         if hasattr(self, "_NFP"):
             self._NFP = int(self._NFP)
-        self._L = int(self._L)
-        self._M = int(self._M)
-        self._N = int(self._N)
 
     @property
     def name(self):
@@ -644,21 +641,6 @@ class VolumeRegion(IOAble, Optimizable, ABC):
     @name.setter
     def name(self, new):
         self._name = str(new)
-
-    @property
-    def L(self):
-        """int: Maximum radial mode number."""
-        return self._L
-
-    @property
-    def M(self):
-        """int: Maximum poloidal mode number."""
-        return self._M
-
-    @property
-    def N(self):
-        """int: Maximum toroidal mode number."""
-        return self._N
 
     @property
     def sym(self):

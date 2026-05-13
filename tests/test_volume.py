@@ -260,7 +260,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_single_mode_R(self):
         """Test set_coeffs for a single R coefficient."""
-        vol = GeneralizedZernikeRZToroidalVolume(Msh=1)
+        vol = GeneralizedZernikeRZToroidalVolume(M_shp=1)
         vol.set_coeffs(-1, 1, 0, R=15.0)
         R, Z = vol.get_coeffs(-1, 1, 0)
         np.testing.assert_allclose(R, [15.0])
@@ -282,7 +282,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_multiple_modes(self):
         """Test set_coeffs for multiple modes."""
-        vol = GeneralizedZernikeRZToroidalVolume(Msh=1)
+        vol = GeneralizedZernikeRZToroidalVolume(M_shp=1)
         vol.set_coeffs([-1, 0], [1, 0], [0, 0], R=[20.0, 3.0])
         R, Z = vol.get_coeffs([-1, 0], [1, 0], [0, 0])
         np.testing.assert_allclose(R, [20.0, 3.0])
@@ -290,7 +290,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_both_R_and_Z(self):
         """Test set_coeffs setting both R and Z for the same mode."""
-        vol = GeneralizedZernikeRZToroidalVolume(sym=False, Msh=1)
+        vol = GeneralizedZernikeRZToroidalVolume(sym=False, M_shp=1)
         vol.set_coeffs(-1, 1, 0, R=25.0, Z=5.0)
         R, Z = vol.get_coeffs(-1, 1, 0)
         np.testing.assert_allclose(R, [25.0])

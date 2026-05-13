@@ -26,6 +26,7 @@ from desc.geometry import (
     FourierRZCurve,
     FourierRZToroidalSurface,
     ZernikeRZToroidalSection,
+    GeneralizedZernikeRZToroidalVolume
 )
 from desc.grid import Grid, LinearGrid, QuadratureGrid, _Grid
 from desc.input_reader import InputReader
@@ -3079,38 +3080,55 @@ class SharpEquilibrium(IOAble, Optimizable):
         self._R_sym = "cos" if self.sym else False
         self._Z_sym = "sin" if self.sym else False
 
-        # surface
+        # volume
+
+        if not isinstance(volume, GeneralizedZernikeRZToroidalVolume):
+            raise TypeError("volume must be a GeneralizedZernikeRZToroidalVolume")
         self._volume, self._bdry_mode = parse_volume(
             volume, self.NFP, self.sym, self.spectral_indexing
         )
 
         # magnetic axis
-        self._axis = parse_axis(axis, self.NFP, self.sym, self.surface)
-
-        ## HERE
+        self._axis = parse_axis(axis, self.NFP, self.sym, self.volume)
 
         # resolution
-        L = check_nonnegint(L, "L")
-        M = check_nonnegint(M, "M")
-        N = check_nonnegint(N, "N")
+        L_std = check_nonnegint(L_std, "L_std")
+        M_std = check_nonnegint(M_std, "M_std")
+        N_std = check_nonnegint(N_std, "N_std")
+        L_shp = check_nonnegint(L_shp, "L_shp")
+        M_shp = check_nonnegint(M_shp, "M_shp")
+        N_shp = check_nonnegint(N_shp, "N_shp")
         L_grid = check_nonnegint(L_grid, "L_grid")
         M_grid = check_nonnegint(M_grid, "M_grid")
         N_grid = check_nonnegint(N_grid, "N_grid")
 
-        self._N = int(setdefault(N, self.surface.N))
-        self._M = int(setdefault(M, self.surface.M))
-        self._L = int(
+        self._N_std = int(setdefault(N_std, self.volume.N_std))
+        self._M_std = int(setdefault(M_std, self.volume.M_std))
+        self._L_std = int(
             setdefault(
-                L,
+                L_std,
                 max(
-                    self.surface.L,
-                    self.M if (self.spectral_indexing == "ansi") else 2 * self.M,
+                    self.volume.L_std,
+                    self.M_std if (self.spectral_indexing == "ansi") else 2 * self.M_std,
+                ),
+            )
+        )
+        self._N_shp = int(setdefault(N_shp, self.volume.N_shp))
+        self._M_shp = int(setdefault(M_shp, self.volume.M_shp))
+        self._L_shp = int(
+            setdefault(
+                L_shp,
+                max(
+                    self.volume.L_shp,
+                    self.M_shp if (self.spectral_indexing == "ansi") else 2 * self.M_shp,
                 ),
             )
         )
         self._L_grid = setdefault(L_grid, 2 * self.L)
         self._M_grid = setdefault(M_grid, 2 * self.M)
         self._N_grid = setdefault(N_grid, 2 * self.N)
+
+        # HERE HERE HERE 
 
         self._surface.change_resolution(self.L, self.M, self.N, sym=self.sym)
         self._axis.change_resolution(self.N, sym=self.sym)

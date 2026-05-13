@@ -152,6 +152,21 @@ class FourierZernikeRZToroidalVolume(Volume):
     def Z_basis(self):
         """Spectral basis for Z."""
         return self._Z_basis
+    
+    @property
+    def L(self):
+        """int: Maximum radial mode number."""
+        return self._L
+    
+    @property
+    def M(self):
+        """int: Maximum poloidal mode number."""
+        return self._M
+    
+    @property
+    def N(self):
+        """int: Maximum toroidal mode number."""
+        return self._N
 
     @execute_on_cpu
     def change_resolution(self, *args, **kwargs):
@@ -316,9 +331,9 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
         L=None,
         M=None,
         N=None,
-        Lsh=None,
-        Msh=None,
-        Nsh=None,
+        L_shp=None,
+        M_shp=None,
+        N_shp=None,
         name="",
         check_orientation=True,
     ):
@@ -370,15 +385,15 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
         L = check_nonnegint(L, "L")
         M = check_nonnegint(M, "M")
         N = check_nonnegint(N, "N")
-        Lsh = check_nonnegint(Lsh, "Lsh")
-        Msh = check_nonnegint(Msh, "Msh")
-        Nsh = check_nonnegint(Nsh, "Nsh")
+        L_shp = check_nonnegint(L_shp, "Lsh")
+        M_shp = check_nonnegint(M_shp, "Msh")
+        N_shp = check_nonnegint(N_shp, "Nsh")
         NFP = check_posint(NFP, "NFP", False)
         self._L = setdefault(L, max(LR, LZ))
         self._M = setdefault(M, max(MR, MZ))
         self._N = setdefault(N, max(NR, NZ, NR_sharp, NZ_sharp))
-        self._Lsh = setdefault(Lsh, max(LR_sharp, LZ_sharp))
-        self._Msh = setdefault(Msh, max(MR_sharp, MZ_sharp))
+        self._Lsh = setdefault(L_shp, max(LR_sharp, LZ_sharp))
+        self._Msh = setdefault(M_shp, max(MR_sharp, MZ_sharp))
         self._Nsh = self._N
         self._NFP = NFP
 
@@ -442,6 +457,36 @@ class GeneralizedZernikeRZToroidalVolume(Volume):
     def Z_basis(self):
         """Spectral basis for Z."""
         return self._Z_basis
+    
+    @property
+    def L(self):
+        """int: Maximum radial mode number."""
+        return self._L
+    
+    @property
+    def M(self):
+        """int: Maximum poloidal mode number."""
+        return self._M
+    
+    @property
+    def N(self):
+        """int: Maximum toroidal mode number."""
+        return self._N
+    
+    @property
+    def L_shp(self):
+        """int: Maximum radial mode number of sharp piece."""
+        return self._L_shp
+    
+    @property
+    def M_shp(self):
+        """int: Maximum poloidal mode number of sharp piece."""
+        return self._M_shp
+    
+    @property
+    def N_shp(self):
+        """int: Maximum toroidal mode number of sharp piece."""
+        return self._N_shp
 
     @execute_on_cpu
     def change_resolution(self, *args, **kwargs):
