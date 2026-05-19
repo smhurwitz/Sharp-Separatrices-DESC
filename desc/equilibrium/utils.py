@@ -176,7 +176,7 @@ def parse_volume(volume, NFP=1, sym=True, spectral_indexing="ansi"):
     if isinstance(volume, VolumeRegion):
         volume = volume
     elif volume is None:
-        volume = FourierZernikeRZToroidalVolume(NFP=NFP, sym=sym)
+        volume = GeneralizedFourierZernikeRZToroidalVolume(NFP=NFP, sym=sym)
     elif isinstance(volume, (np.ndarray, jnp.ndarray)):
         raise NotImplementedError("Only a `VolumeRegion` input is currently supported.")
     else:

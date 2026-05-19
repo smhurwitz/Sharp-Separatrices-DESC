@@ -3082,7 +3082,7 @@ class SharpEquilibrium(IOAble, Optimizable):
 
         NFP = check_posint(NFP, "NFP")
         self._NFP = int(
-            setdefault(NFP, getattr(volume, "NFP"))
+            setdefault(NFP, getattr(volume, "NFP", 1))
         )
 
         # stellarator symmetry for bases
@@ -3101,12 +3101,11 @@ class SharpEquilibrium(IOAble, Optimizable):
         self._Z_sym = "sin" if self.sym else False
 
         # volume
-
-        if not isinstance(volume, GeneralizedFourierZernikeRZToroidalVolume):
-            raise TypeError("volume must be a GeneralizedZernikeRZToroidalVolume")
         self._volume, self._bdry_mode = parse_volume(
             volume, self.NFP, self.sym, self.spectral_indexing
         )
+        if not isinstance(self._volume, GeneralizedFourierZernikeRZToroidalVolume):
+            raise TypeError("volume must be a GeneralizedFourierZernikeRZToroidalVolume")
 
         # magnetic axis
         self._axis = self.volume.get_axis()
@@ -3389,6 +3388,411 @@ class SharpEquilibrium(IOAble, Optimizable):
 
         """
         set_initial_guess_sharp(self, *args, ensure_nested=ensure_nested)
+
+
+    
+    def compute(  # noqa: C901
+        self,
+        names,
+        grid=None,
+        params=None,
+        transforms=None,
+        profiles=None,
+        data=None,
+        override_grid=True,
+        **kwargs,
+    ):
+        """Compute the quantity given by name on grid.
+
+        If ``grid.coordinates!="rtz"`` then this method may take longer to run
+        than usual as a coordinate mapping subproblem will need to be solved.
+
+        Parameters
+        ----------
+        names : str or array-like of str
+            Name(s) of the quantity(s) to compute.
+        grid : Grid, optional
+            Grid of coordinates to evaluate at. Defaults to the quadrature grid.
+        params : dict of ndarray
+            Parameters from the equilibrium, such as R_lmn, Z_lmn, i_l, p_l, etc
+            Defaults to attributes of self.
+        transforms : dict of Transform
+            Transforms for R, Z, lambda, etc. Default is to build from grid
+        profiles : dict of Profile
+            Profile objects for pressure, iota, current, etc. Defaults to attributes
+            of self
+        data : dict[str, jnp.ndarray]
+            Data computed so far, generally output from other compute functions.
+            Any vector v = v¹ R̂ + v² ϕ̂ + v³ Ẑ should be given in components
+            v = [v¹, v², v³] where R̂, ϕ̂, Ẑ are the normalized basis vectors
+            of the cylindrical coordinates R, ϕ, Z.
+        override_grid : bool
+            If True, override the user supplied grid if necessary and use a full
+            resolution grid to compute quantities and then downsample to user requested
+            grid. If False, uses only the user specified grid, which may lead to
+            inaccurate values for surface or volume averages.
+
+        Returns
+        -------
+        data : dict of ndarray
+            Computed quantity and intermediate variables.
+
+        """
+        if isinstance(names, str):
+            names = [names]
+        if grid is None:
+            grid = QuadratureGrid(self.L_grid, self.M_grid, self.N_grid, self.NFP)
+        errorif(
+            not isinstance(grid, _Grid),
+            TypeError,
+            msg="must pass in a Grid object for argument grid!"
+            f" instead got type {type(grid)}",
+        )
+        # a check for Redl to prevent computing on-axis or
+        # at a rho=1.0 point where profiles vanish
+        if (
+            any(["Redl" in name for name in names])
+            and self.electron_density is not None
+        ):
+            warnif(
+                grid.axis.size,
+                UserWarning,
+                "Redl formula is undefined at rho=0, "
+                "but grid has grid points at rho=0, note that on-axis"
+                "current will be NaN.",
+            )
+            rho = grid.compress(grid.nodes[:, 0], "rho")
+
+            # check if profiles may go to zero
+            # if they are exactly zero this would cause NaNs since the profiles
+            # vanish.
+            warnif(
+                np.any(np.isclose(self.electron_density(rho), 0.0, atol=1e-8)),
+                UserWarning,
+                "Redl formula is undefined where kinetic profiles vanish, "
+                "but given electron density vanishes at at least one provided"
+                "rho grid point.",
+            )
+            warnif(
+                np.any(np.isclose(self.electron_temperature(rho), 0.0, atol=1e-8)),
+                UserWarning,
+                "Redl formula is undefined where kinetic profiles vanish, "
+                "but given electron temperature vanishes at at least one provided"
+                "rho grid point.",
+            )
+            warnif(
+                np.any(np.isclose(self.ion_temperature(rho), 0.0, atol=1e-8)),
+                UserWarning,
+                "Redl formula is undefined where kinetic profiles vanish, "
+                "but given ion temperature vanishes at at least one provided"
+                "rho grid point.",
+            )
+
+        if grid.coordinates != "rtz":
+            inbasis = {
+                "r": "rho",
+                "t": "theta",
+                "v": "theta_PEST",
+                "a": "alpha",
+                "z": "zeta",
+                "p": "phi",
+            }
+            rtz_nodes = self.map_coordinates(
+                grid.nodes,
+                inbasis=[inbasis[char] for char in grid.coordinates],
+                outbasis=("rho", "theta", "zeta"),
+                period=grid.period,
+                tol=kwargs.pop("tol", 1e-6),
+                maxiter=kwargs.pop("maxiter", 30),
+            )
+            grid = Grid(
+                nodes=rtz_nodes,
+                coordinates="rtz",
+                source_grid=grid,
+                sort=False,
+                jitable=False,
+            )
+
+        method = kwargs.pop("method", "auto")
+        if params is None:
+            params = get_params(
+                names,
+                obj=self,
+                has_axis=grid.axis.size,
+                basis=kwargs.get("basis", "rpz"),
+            )
+        if profiles is None:
+            profiles = get_profiles(
+                names, obj=self, grid=grid, basis=kwargs.get("basis", "rpz")
+            )
+        if transforms is None:
+            transforms = get_transforms(
+                names,
+                obj=self,
+                grid=grid,
+                method=method,
+                **kwargs,
+            )
+        if data is None:
+            data = {}
+
+        p = "desc.equilibrium.equilibrium.Equilibrium"
+        deps = set(
+            get_data_deps(names, obj=p, has_axis=grid.axis.size, data=data) + names
+        )
+
+        def need_src(name):
+            # Need to compute these on grid that is paired to the source grid, since
+            # the compute logic assume input data is evaluated on those coordinates.
+            # We exclude these from the depXdx sets below since the grids we will
+            # use to compute those dependencies are coordinate-blind.
+            # Example, "fieldline length" has coordinates="r", but requires computing
+            # on field line following source grid.
+            return bool(data_index[p][name]["source_grid_requirement"])
+
+        # Need to call _grow_seeds so that e.g. "max(fieldline length)" which does not
+        # need a source grid to evaluate, still computes "fieldline length"
+        # on a grid whose source grid follows field lines.
+        # Maybe this can help explain:
+        # https://github.com/PlasmaControl/DESC/pull/1024#discussion_r1664918897.
+        need_src_deps = _grow_seeds(p, set(filter(need_src, deps)), deps)
+
+        dep0d = {
+            dep for dep in deps if is_0d_vol_grid(dep) and dep not in need_src_deps
+        }
+        deps_after_0d = set(
+            get_data_deps(
+                names, obj=p, has_axis=grid.axis.size, data=data.keys() | dep0d
+            )
+            + names
+        )
+        dep1dr = {
+            dep
+            for dep in deps_after_0d
+            if is_1dr_rad_grid(dep) and dep not in need_src_deps
+        }
+        deps_after_0d_1dr = set(
+            get_data_deps(
+                names, obj=p, has_axis=grid.axis.size, data=data.keys() | dep0d | dep1dr
+            )
+            + names
+        )
+        dep1dz = {
+            dep
+            for dep in deps_after_0d_1dr
+            if is_1dz_tor_grid(dep) and dep not in need_src_deps
+            # These don't need a special grid, since the transforms are always
+            # built on the (rho, theta, zeta) coordinate grid.
+            and dep not in ["phi", "zeta"]
+        }
+
+        # Whether we need to calculate any dependencies on a special grid.
+        calc0d = bool(dep0d)
+        calc1dr = bool(dep1dr)
+        calc1dz = bool(dep1dz)
+        # If the grid samples the full volume, then it is sufficient.
+        if grid.L >= self.L_grid and grid.M >= self.M_grid and grid.N >= self.N_grid:
+            if isinstance(grid, QuadratureGrid):
+                calc0d = calc1dr = grid.N * grid.NFP < self.N_grid * self.NFP
+                calc1dz = False
+            if isinstance(grid, LinearGrid):
+                calc1dr = grid.N * grid.NFP < self.N_grid * self.NFP
+                calc1dz = False
+        else:
+            # Warn if best way to compute accurately is increasing resolution.
+            for dep in deps:
+                req = data_index[p][dep]["resolution_requirement"]
+                msg = lambda direction: (
+                    f"Dependency {dep} may require more {direction}"
+                    " resolution to compute accurately."
+                )
+                warnif(
+                    # if need more radial resolution
+                    "r" in req and grid.L < self.L_grid
+                    # and won't override grid to one with more radial resolution
+                    and not (
+                        override_grid and (is_1dz_tor_grid(dep) or is_0d_vol_grid(dep))
+                    ),
+                    ResolutionWarning,
+                    msg("radial") + f" got L_grid={grid.L} < {self._L_grid}.",
+                )
+                warnif(
+                    # if need more poloidal resolution
+                    "t" in req and grid.M < self.M_grid
+                    # and won't override grid to one with more poloidal resolution
+                    and not (
+                        override_grid
+                        and (
+                            is_1dr_rad_grid(dep)
+                            or is_1dz_tor_grid(dep)
+                            or is_0d_vol_grid(dep)
+                        )
+                    ),
+                    ResolutionWarning,
+                    msg("poloidal") + f" got M_grid={grid.M} < {self._M_grid}.",
+                )
+                warnif(
+                    # if need more toroidal resolution
+                    "z" in req and (grid.N * grid.NFP < self.N_grid * self.NFP)
+                    # and won't override grid to one with more toroidal resolution
+                    and not (
+                        override_grid and (is_1dr_rad_grid(dep) or is_0d_vol_grid(dep))
+                    ),
+                    ResolutionWarning,
+                    msg("toroidal") + f" got N_grid*grid.NFP={grid.N}*{grid.NFP} "
+                    f"< {self._N_grid}*{self.NFP}.",
+                )
+
+        # Now compute dependencies on the proper grids, passing in any available
+        # seed data which is already computed and interpolatable.
+        # There isn't a single non-repeating order for computing that ensures the
+        # dependencies of the dependencies are computed on the proper grid. However,
+        # 0d -> 1dr -> 1dz -> rest covers most cases. In cases where it
+        # doesn't, the expectation is that developer registers the compute function
+        # with a resolution requirement or the user precomputes it.
+
+        if calc0d and override_grid:
+            grid0d = QuadratureGrid(self.L_grid, self.M_grid, self.N_grid, self.NFP)
+            data0d_seed = {key: data[key] for key in data if is_0d_vol_grid(key)}
+            data0d = compute_fun(
+                self,
+                list(dep0d),
+                params=params,
+                transforms=get_transforms(
+                    dep0d,
+                    obj=self,
+                    grid=grid0d,
+                    method=method,
+                    **kwargs,
+                ),
+                profiles=get_profiles(
+                    dep0d, obj=self, grid=grid0d, basis=kwargs.get("basis", "rpz")
+                ),
+                # If a dependency of something is already computed, use it
+                # instead of recomputing it on a potentially bad grid.
+                data=data0d_seed,
+                **kwargs,
+            )
+            # These should all be 0d quantities so don't need to compress/expand.
+            data0d = {
+                key: data0d[key] for key in data0d if key in dep0d and key not in data
+            }
+            data.update(data0d)
+
+        if (calc1dr or calc1dz) and override_grid:
+            data0d_seed = {key: data[key] for key in data if is_0d_vol_grid(key)}
+        else:
+            data0d_seed = {}
+        if calc1dr and override_grid:
+            grid1dr = LinearGrid(
+                rho=grid.compress(grid.nodes[:, 0], surface_label="rho"),
+                M=self.M_grid,
+                N=self.N_grid,
+                NFP=self.NFP,
+                sym=self.sym
+                and all(
+                    data_index[p][dep]["grid_requirement"].get("sym", True)
+                    # TODO (#1206)
+                    and not data_index[p][dep]["grid_requirement"].get(
+                        "can_fft2", False
+                    )
+                    for dep in dep1dr
+                ),
+            )
+            data1dr_seed = {
+                key: grid1dr.copy_data_from_other(data[key], grid, surface_label="rho")
+                for key in data
+                if is_1dr_rad_grid(key)
+            }
+            data1dr = compute_fun(
+                self,
+                list(dep1dr),
+                params=params,
+                transforms=get_transforms(
+                    dep1dr,
+                    obj=self,
+                    grid=grid1dr,
+                    method=method,
+                    **kwargs,
+                ),
+                profiles=get_profiles(
+                    dep1dr, obj=self, grid=grid1dr, basis=kwargs.get("basis", "rpz")
+                ),
+                # If a dependency of something is already computed, use it
+                # instead of recomputing it on a potentially bad grid.
+                data=data1dr_seed | data0d_seed,
+                **kwargs,
+            )
+            # Need to make this data broadcast with the data on the original grid.
+            data1dr = {
+                key: grid.copy_data_from_other(
+                    data1dr[key], grid1dr, surface_label="rho"
+                )
+                for key in data1dr
+                if key in dep1dr and key not in data
+            }
+            data.update(data1dr)
+
+        if calc1dz and override_grid:
+            grid1dz = LinearGrid(
+                zeta=grid.compress(grid.nodes[:, 2], surface_label="zeta"),
+                L=self.L_grid,
+                M=self.M_grid,
+                NFP=grid.NFP,  # ex: self.NFP>1 but grid.NFP=1 for plot_3d
+                sym=self.sym
+                and all(
+                    data_index[p][dep]["grid_requirement"].get("sym", True)
+                    # TODO (#1206)
+                    and not data_index[p][dep]["grid_requirement"].get(
+                        "can_fft2", False
+                    )
+                    for dep in dep1dz
+                ),
+            )
+            data1dz_seed = {
+                key: grid1dz.copy_data_from_other(data[key], grid, surface_label="zeta")
+                for key in data
+                if is_1dz_tor_grid(key)
+            }
+            data1dz = compute_fun(
+                self,
+                list(dep1dz),
+                params=params,
+                transforms=get_transforms(
+                    dep1dz,
+                    obj=self,
+                    grid=grid1dz,
+                    method=method,
+                    **kwargs,
+                ),
+                profiles=get_profiles(
+                    dep1dz, obj=self, grid=grid1dz, basis=kwargs.get("basis", "rpz")
+                ),
+                # If a dependency of something is already computed, use it
+                # instead of recomputing it on a potentially bad grid.
+                data=data1dz_seed | data0d_seed,
+                **kwargs,
+            )
+            # Need to make this data broadcast with the data on the original grid.
+            data1dz = {
+                key: grid.copy_data_from_other(
+                    data1dz[key], grid1dz, surface_label="zeta"
+                )
+                for key in data1dz
+                if key in dep1dz and key not in data
+            }
+            data.update(data1dz)
+
+        data = compute_fun(
+            self,
+            names,
+            params=params,
+            transforms=transforms,
+            profiles=profiles,
+            data=data,
+            **kwargs,
+        )
+        return data
 
 
     @property

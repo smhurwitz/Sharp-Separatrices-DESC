@@ -1474,7 +1474,7 @@ class ChebyshevPolynomial(_Basis):
             self._set_up()
 
 
-class GeneralizedFourierZernikeBasis:
+class GeneralizedFourierZernikeBasis(IOAble, ABC):
     """Generalized Fourier-Zernike basis set for analytic functions in a toroidal volume.
 
     This is a sum of a Fourier-Zernike basis and a sharp Fourier-Zernike basis. 
