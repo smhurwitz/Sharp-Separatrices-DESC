@@ -10,9 +10,11 @@ from qic import Qic
 from desc.__main__ import main
 from desc.backend import sign
 from desc.compute.utils import get_transforms
-from desc.equilibrium import EquilibriaFamily, Equilibrium
+from desc.equilibrium import EquilibriaFamily, Equilibrium, SharpEquilibrium
 from desc.equilibrium.coords import _map_poloidal_coordinates
 from desc.examples import get
+from desc.geometry import FourierRZCurve
+from desc.geometry.volume import GeneralizedFourierZernikeRZToroidalVolume
 from desc.grid import Grid, LinearGrid
 from desc.io import InputReader, load
 from desc.objectives import ForceBalance, ObjectiveFunction, get_equilibrium_objective
@@ -436,6 +438,57 @@ def test_equilibrium_unused_kwargs():
 
 
 @pytest.mark.unit
+def test_sharp_equilibrium_init_default_volume():
+    """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
+    vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4)
+    eq = SharpEquilibrium(volume=vol, ensure_nested=False, check_orientation=False)
+
+    expected_axis = vol.get_axis()
+    assert eq.volume is vol
+    assert isinstance(eq.axis, FourierRZCurve)
+    np.testing.assert_allclose(eq.axis.R_n, expected_axis.R_n)
+    np.testing.assert_allclose(eq.axis.Z_n, expected_axis.Z_n)
+    assert eq.axis.NFP == vol.NFP
+    assert eq.axis.sym == vol.sym
+    assert eq.R_lmn.shape == (eq.R_basis.num_modes,)
+    assert eq.Z_lmn.shape == (eq.Z_basis.num_modes,)
+    assert eq.L_lmn.shape == (eq.L_basis.num_modes,)
+    assert np.all(eq.R_lmn == vol.R_lmn)
+    assert np.all(eq.Z_lmn == vol.Z_lmn)
+    assert np.all(eq.L_lmn == np.zeros_like(eq.Z_lmn))
+    assert not np.all(eq.R_lmn == 0)
+    assert not np.all(eq.Z_lmn == 0)
+
+@pytest.mark.unit
+def test_sharp_equilibrium_init_propagates_resolution():
+    """SharpEquilibrium updates the volume and axis resolutions from its arguments."""
+    vol = GeneralizedFourierZernikeRZToroidalVolume(
+        L=2, M=2, N=0, L_shp=2, M_shp=2, N_shp=0
+    )
+    eq = SharpEquilibrium(
+        volume=vol,
+        L=4,
+        M=4,
+        N=2,
+        L_shp=4,
+        M_shp=4,
+        N_shp=2,
+        ensure_nested=False,
+        check_orientation=False,
+    )
+
+    assert eq.volume.L == 4
+    assert eq.volume.M == 4
+    assert eq.volume.N == 2
+    assert eq.volume.L_shp == 4
+    assert eq.volume.M_shp == 4
+    assert eq.volume.N_shp == 2
+    assert eq.axis.N == 2
+    assert eq.L == 4
+    assert eq.M == 4
+    assert eq.N == 2
+
+@pytest.mark.unit
 @pytest.mark.solve
 def test_backward_compatible_load_and_resolve():
     """Test backwards compatibility of load and re-solve."""
@@ -493,3 +546,4 @@ def test_eq_optimize_default_constraints_warning(DummyStellarator):
             optimizer="lsq-exact",
             maxiter=0,
         )
+

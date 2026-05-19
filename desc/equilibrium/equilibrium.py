@@ -11,7 +11,13 @@ from scipy import special
 from scipy.constants import mu_0
 
 from desc.backend import execute_on_cpu, jnp
-from desc.basis import FourierZernikeBasis, fourier, zernike_radial, GeneralizedFourierZernikeBasis
+from desc.basis import (
+    FourierZernikeBasis, 
+    fourier, 
+    zernike_radial, 
+    GeneralizedFourierZernikeBasis, 
+    SharpFourierZernikeBasis
+)
 from desc.compat import ensure_positive_jacobian
 from desc.compute import compute as compute_fun
 from desc.compute import data_index
@@ -2901,6 +2907,14 @@ class SharpEquilibrium(IOAble, Optimizable):
         Poloidal resolution of sharp basis. Default volume.M_shp or 1
     N_shp : int (optional)
         Toroidal resolution of sharp basis. Default volume.N_shp or 0
+    m_b : int (optional)
+        poloidal mode number associated with the boundary of the volume
+    n_b : int (optional)
+        toroidal mode number associated with the boundary of the volume
+    β : float (optional)
+        Angle of corners for lens mapping method.
+    sharp_type : str (optional)
+        Method for sharp mapping, either "lens" or "hypergeometric".
     L_grid : int (optional)
         resolution of real space nodes in radial direction
     M_grid : int (optional)
@@ -2934,10 +2948,6 @@ class SharpEquilibrium(IOAble, Optimizable):
         Default is a PowerSeriesProfile with zero anisotropic pressure.
     volume: VolumeRegion (optional)
         Fixed boundary surface shape, as a VolumeRegion object.
-    axis : Curve or ndarray shape(k,3) (optional)
-        Initial guess for the magnetic axis as a Curve object or ndarray
-        of mode numbers and spectral coefficients of the form [n, R, Z].
-        Default is the centroid of the surface.
     sym : bool (optional)
         Whether to enforce stellarator symmetry. Default surface.sym or False.
     spectral_indexing : str (optional)
@@ -2968,11 +2978,14 @@ class SharpEquilibrium(IOAble, Optimizable):
         "_R_lmn",
         "_Z_lmn",
         "_L_lmn",
+        "m_b",
+        "n_b",
+        "β",
+        "sharp_type",
         "_R_basis",
         "_Z_basis",
         "_L_basis",
         "_volume",
-        "_axis",
         "_pressure",
         "_iota",
         "_current",
@@ -2998,6 +3011,10 @@ class SharpEquilibrium(IOAble, Optimizable):
         "_L_shp",
         "_M_shp",
         "_N_shp",
+        "m_b",
+        "n_b",
+        "β",
+        "sharp_type",
         "_L_grid",
         "_M_grid",
         "_N_grid",
@@ -3019,6 +3036,10 @@ class SharpEquilibrium(IOAble, Optimizable):
         L_shp=None,
         M_shp=None,
         N_shp=None,
+        m_b=1,
+        n_b=1,
+        β=0.75*np.pi,
+        sharp_type="lens",
         L_grid=None,
         M_grid=None,
         N_grid=None,
@@ -3031,7 +3052,6 @@ class SharpEquilibrium(IOAble, Optimizable):
         atomic_number=None,
         anisotropy=None,
         volume=None,
-        axis=None,
         sym=None,
         spectral_indexing=None,
         check_orientation=True,
@@ -3062,7 +3082,7 @@ class SharpEquilibrium(IOAble, Optimizable):
 
         NFP = check_posint(NFP, "NFP")
         self._NFP = int(
-            setdefault(NFP, getattr(volume, "NFP", getattr(axis, "NFP", 1)))
+            setdefault(NFP, getattr(volume, "NFP"))
         )
 
         # stellarator symmetry for bases
@@ -3089,12 +3109,12 @@ class SharpEquilibrium(IOAble, Optimizable):
         )
 
         # magnetic axis
-        self._axis = parse_axis(axis, self.NFP, self.sym, self.volume)
+        self._axis = self.volume.get_axis()
 
         # resolution
-        L = check_nonnegint(L, "L_std")
-        M = check_nonnegint(M, "M_std")
-        N = check_nonnegint(N, "N_std")
+        L = check_nonnegint(L, "L")
+        M = check_nonnegint(M, "M")
+        N = check_nonnegint(N, "N")
         L_shp = check_nonnegint(L_shp, "L_shp")
         M_shp = check_nonnegint(M_shp, "M_shp")
         N_shp = check_nonnegint(N_shp, "N_shp")
@@ -3102,14 +3122,14 @@ class SharpEquilibrium(IOAble, Optimizable):
         M_grid = check_nonnegint(M_grid, "M_grid")
         N_grid = check_nonnegint(N_grid, "N_grid")
 
-        self._N = int(setdefault(N, self.volume.N_std))
-        self._M = int(setdefault(M, self.volume.M_std))
+        self._N = int(setdefault(N, self.volume.N))
+        self._M = int(setdefault(M, self.volume.M))
         self._L = int(
             setdefault(
                 L,
                 max(
-                    self.volume.L_std,
-                    self.M_std if (self.spectral_indexing == "ansi") else 2 * self.M_std,
+                    self.volume.L,
+                    self.M if (self.spectral_indexing == "ansi") else 2 * self.M,
                 ),
             )
         )
@@ -3139,40 +3159,89 @@ class SharpEquilibrium(IOAble, Optimizable):
             )
         self._axis.change_resolution(self.N, sym=self.sym)
 
+        # resolution
+        m_b = check_nonnegint(m_b, "m_b")
+        n_b = check_nonnegint(n_b, "n_b")
+        assert (β > 0 and β <= np.pi), "β must be between 0 and π"
+        assert (sharp_type == "lens" or sharp_type == "hypergeometric"), "sharp_type must be lens or hypergeometric"
+        self._m_b = m_b
+        self._n_b = n_b
+        self._β = β
+        self._sharp_type = sharp_type
+
+        L_shp = check_nonnegint(L_shp, "L_shp")
+        M_shp = check_nonnegint(M_shp, "M_shp")
+        N_shp = check_nonnegint(N_shp, "N_shp")
+        L_grid = check_nonnegint(L_grid, "L_grid")
+        M_grid = check_nonnegint(M_grid, "M_grid")
+        N_grid = check_nonnegint(N_grid, "N_grid")
+
         # bases
-        self._R_basis = GeneralizedFourierZernikeBasis(
+        R_basis_std = FourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
-            L_shp=self.L_shp,
-            M_shp=self.M_shp,
-            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._R_sym,
             spectral_indexing=self.spectral_indexing,
         )
-        self._Z_basis = GeneralizedFourierZernikeBasis(
+        R_basis_shp = SharpFourierZernikeBasis(
+            L=self.L_shp,
+            M=self.M_shp,
+            N=self.N_shp,
+            NFP=self.NFP,
+            m_b=self.m_b,
+            n_b=self.n_b,
+            β=self.β,
+            sharp_type=self.sharp_type,
+            sym=self._R_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+        self._R_basis = GeneralizedFourierZernikeBasis(R_basis_std, R_basis_shp)
+
+        Z_basis_std = FourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
-            L_shp=self.L_shp,
-            M_shp=self.M_shp,
-            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
         )
-        self._L_basis = GeneralizedFourierZernikeBasis(
+        Z_basis_shp = SharpFourierZernikeBasis(
+            L=self.L_shp,
+            M=self.M_shp,
+            N=self.N_shp,
+            NFP=self.NFP,
+            m_b=self.m_b,
+            n_b=self.n_b,
+            β=self.β,
+            sharp_type=self.sharp_type,
+            sym=self._Z_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+        self._Z_basis = GeneralizedFourierZernikeBasis(Z_basis_std, Z_basis_shp)
+
+        L_basis_std = FourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
-            L_shp=self.L_shp,
-            M_shp=self.M_shp,
-            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
         )
+        L_basis_shp = SharpFourierZernikeBasis(
+            L=self.L_shp,
+            M=self.M_shp,
+            N=self.N_shp,
+            NFP=self.NFP,
+            m_b=self.m_b,
+            n_b=self.n_b,
+            β=self.β,
+            sharp_type=self.sharp_type,
+            sym=self._Z_sym,
+            spectral_indexing=self.spectral_indexing,
+        )
+        self._L_basis = GeneralizedFourierZernikeBasis(L_basis_std, L_basis_shp)
 
         # profiles
         self._pressure = None
@@ -3405,14 +3474,34 @@ class SharpEquilibrium(IOAble, Optimizable):
         return self._L_shp
 
     @property
-    def M(self):
+    def M_shp(self):
         """int: Maximum poloidal fourier mode number of sharp piece."""
         return self._M_shp
 
     @property
-    def N(self):
+    def N_shp(self):
         """int: Maximum toroidal fourier mode number of sharp piece."""
         return self._N_shp
+    
+    @property
+    def m_b(self):
+        """int: poloidal mode number associated with the boundary of the volume"""
+        return self._m_b
+    
+    @property
+    def n_b(self):
+        """int: toroidal mode number associated with the boundary of the volume"""
+        return self._n_b
+    
+    @property
+    def β(self):
+         """float: Angle of corners for lens mapping method."""
+         return self._β
+    
+    @property
+    def sharp_type(self):
+        """str: Method for sharp mapping, either "lens" or "hypergeometric"."""
+        return self._sharp_type
 
     @optimizable_parameter
     @property
