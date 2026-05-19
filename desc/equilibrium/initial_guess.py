@@ -256,6 +256,243 @@ def set_initial_guess(eq, *args, ensure_nested=True):  # noqa: C901
     return eq
 
 
+def set_initial_guess_sharp(eq, *args, ensure_nested=True):  # noqa: C901
+    """Set the initial guess for the flux surfaces, eg R_lmn, Z_lmn, L_lmn.
+
+    Parameters
+    ----------
+    eq : SharpEquilibrium
+        SharpEquilibrium to initialize
+    args :
+        either:
+          - No arguments, in which case eq.surface will be scaled down to eq.axis
+          as the initial guess, and eq.L_lmn will be set to zero.
+          - Another Surface object, which will be scaled down to an axis to generate
+            the guess. Optionally a Curve object may also be supplied for the magnetic
+            axis, if not supplied then the Surface object's `get_axis` method will be
+            used to find the axis from the surface, and eq.L_lmn will be set to zero.
+          - Another Equilibrium, whose flux surfaces and lambda will be used.
+          - File path to a VMEC or DESC equilibrium, which will be loaded and used.
+          - Grid and 2-3 ndarrays, specifying the flux surface locations (R, Z, and
+            optionally lambda) at fixed flux coordinates. All arrays should have the
+            same length. Optionally, an ndarray of shape(k,3) may be passed instead
+            of a grid. If lambda is not passed, it will be set to zero.
+    ensure_nested : bool
+        If True, and the default initial guess does not produce nested surfaces,
+        run a small optimization problem to attempt to refine initial guess to improve
+        coordinate mapping.
+
+    Examples
+    --------
+    Use existing equil.surface and scales down for guess:
+
+    >>> equil.set_initial_guess()
+
+    Use supplied Surface and scales down for guess. Assumes axis is centroid
+    of user supplied surface:
+
+    >>> equil.set_initial_guess(surface)
+
+    Optionally, an interior surface may be scaled by giving the surface a
+    flux label:
+
+    >>> surf = FourierRZToroidalSurface(rho=0.7)
+    >>> equil.set_initial_guess(surf)
+
+    Use supplied Surface and a supplied Curve for axis and scales between
+    them for guess:
+
+    >>> equil.set_initial_guess(surface, curve)
+
+    Use the flux surfaces from an existing Equilibrium:
+
+    >>> equil.set_initial_guess(equil2)
+
+    Use flux surfaces from existing Equilibrium or VMEC output stored on disk:
+
+    >>> equil.set_initial_guess(path_to_saved_DESC_or_VMEC_output)
+
+    Use flux surfaces specified by points:
+    nodes should either be a Grid or an ndarray, shape(k,3) giving the locations
+    in rho, theta, zeta coordinates. R, Z, and optionally lambda should be
+    array-like, shape(k,) giving the corresponding real space coordinates
+
+    >>> equil.set_initial_guess(nodes, R, Z, lambda)
+
+    """
+    # nargs = len(args)
+    # if nargs > 4:
+    #     raise ValueError(
+    #         "set_initial_guess should be called with 4 or fewer arguments."
+    #     )
+    # if nargs == 0 or nargs == 1 and args[0] is None:
+    #     if hasattr(eq, "_surface"):
+    #         # use whatever surface is already assigned
+    #         if hasattr(eq, "_axis"):
+    #             axisR = np.array([eq._axis.R_basis.modes[:, -1], eq._axis.R_n]).T
+    #             axisZ = np.array([eq._axis.Z_basis.modes[:, -1], eq._axis.Z_n]).T
+    #         else:
+    #             axisR = None
+    #             axisZ = None
+    #         coord = eq.surface.rho if hasattr(eq.surface, "rho") else None
+    #         eq.R_lmn = _initial_guess_surface(
+    #             eq.R_basis,
+    #             eq.Rb_lmn,
+    #             eq.surface.R_basis,
+    #             axisR,
+    #             coord=coord,
+    #         )
+    #         eq.Z_lmn = _initial_guess_surface(
+    #             eq.Z_basis,
+    #             eq.Zb_lmn,
+    #             eq.surface.Z_basis,
+    #             axisZ,
+    #             coord=coord,
+    #         )
+    #         eq.L_lmn = np.zeros_like(eq.L_lmn)
+    #     else:
+    #         raise ValueError(
+    #             "set_initial_guess called with no arguments, "
+    #             + "but no surface is assigned."
+    #         )
+    # else:  # nargs > 0
+    #     if isinstance(args[0], Surface):
+    #         surface = args[0]
+    #         if nargs > 1:
+    #             if isinstance(args[1], FourierRZCurve):
+    #                 axis = args[1]
+    #                 axisR = np.array([axis.R_basis.modes[:, -1], axis.R_n]).T
+    #                 axisZ = np.array([axis.Z_basis.modes[:, -1], axis.Z_n]).T
+    #             else:
+    #                 raise TypeError(
+    #                     "Don't know how to initialize from object type {}".format(
+    #                         type(args[1])
+    #                     )
+    #                 )
+    #         else:
+    #             axisR = None
+    #             axisZ = None
+    #         coord = surface.rho if hasattr(surface, "rho") else None
+    #         eq.R_lmn = _initial_guess_surface(
+    #             eq.R_basis,
+    #             surface.R_lmn,
+    #             surface.R_basis,
+    #             axisR,
+    #             coord=coord,
+    #         )
+    #         eq.Z_lmn = _initial_guess_surface(
+    #             eq.Z_basis,
+    #             surface.Z_lmn,
+    #             surface.Z_basis,
+    #             axisZ,
+    #             coord=coord,
+    #         )
+    #         eq.L_lmn = np.zeros_like(eq.L_lmn)
+    #     elif type(args[0]) is type(eq):
+    #         eq1 = args[0]
+    #         if nargs > 1:
+    #             raise ValueError(
+    #                 "set_initial_guess got unknown additional argument {}.".format(
+    #                     args[1]
+    #                 )
+    #             )
+    #         eq.R_lmn = copy_coeffs(eq1.R_lmn, eq1.R_basis.modes, eq.R_basis.modes)
+    #         eq.Z_lmn = copy_coeffs(eq1.Z_lmn, eq1.Z_basis.modes, eq.Z_basis.modes)
+    #         eq.L_lmn = copy_coeffs(eq1.L_lmn, eq1.L_basis.modes, eq.L_basis.modes)
+    #         eq.Ra_n = copy_coeffs(
+    #             eq1.Ra_n, eq1.axis.R_basis.modes, eq.axis.R_basis.modes
+    #         )
+    #         eq.Za_n = copy_coeffs(
+    #             eq1.Za_n, eq1.axis.Z_basis.modes, eq.axis.Z_basis.modes
+    #         )
+
+    #     elif isinstance(args[0], (str, os.PathLike)):
+    #         # from file
+    #         path = args[0]
+    #         file_format = None
+    #         if nargs > 1:
+    #             if isinstance(args[1], str):
+    #                 file_format = args[1]
+    #             else:
+    #                 raise ValueError(
+    #                     "set_initial_guess got unknown additional argument "
+    #                     + "{}.".format(args[1])
+    #                 )
+    #         try:  # is it desc?
+    #             eq1 = load(path, file_format)
+    #         except:  # noqa: E722
+    #             try:  # maybe its vmec
+    #                 from desc.vmec import VMECIO
+
+    #                 eq1 = VMECIO.load(path)
+    #             except:  # noqa: E722
+    #                 raise ValueError(
+    #                     "Could not load equilibrium from path {}, ".format(path)
+    #                     + "please make sure it is a valid DESC or VMEC equilibrium."
+    #                 )
+    #         if not type(eq1) is type(eq):
+    #             if hasattr(eq1, "equilibria"):  # it's a family!
+    #                 eq1 = eq1[-1]
+    #             else:
+    #                 raise TypeError(
+    #                     "Cannot initialize equilibrium from loaded object of type "
+    #                     + "{}".format(type(eq1))
+    #                 )
+    #         eq.R_lmn = copy_coeffs(eq1.R_lmn, eq1.R_basis.modes, eq.R_basis.modes)
+    #         eq.Z_lmn = copy_coeffs(eq1.Z_lmn, eq1.Z_basis.modes, eq.Z_basis.modes)
+    #         eq.L_lmn = copy_coeffs(eq1.L_lmn, eq1.L_basis.modes, eq.L_basis.modes)
+    #         eq.Ra_n = copy_coeffs(
+    #             eq1.Ra_n, eq1.axis.R_basis.modes, eq.axis.R_basis.modes
+    #         )
+    #         eq.Za_n = copy_coeffs(
+    #             eq1.Za_n, eq1.axis.Z_basis.modes, eq.axis.Z_basis.modes
+    #         )
+
+    #     elif nargs > 2:  # assume we got nodes and ndarray of points
+    #         grid = args[0]
+    #         R = args[1]
+    #         eq.R_lmn = _initial_guess_points(grid, R, eq.R_basis)
+    #         Z = args[2]
+    #         eq.Z_lmn = _initial_guess_points(grid, Z, eq.Z_basis)
+    #         if nargs > 3:
+    #             lmbda = args[3]
+    #             eq.L_lmn = _initial_guess_points(grid, lmbda, eq.L_basis)
+    #         else:
+    #             eq.L_lmn = jnp.zeros(eq.L_basis.num_modes)
+
+    #     else:
+    #         raise ValueError("Can't initialize equilibrium from args {}.".format(args))
+
+    # if ensure_nested and not eq.is_nested():
+    #     warnings.warn(
+    #         "Surfaces from initial guess are not nested, attempting to refine "
+    #         + "coordinates. This may take a few moments."
+    #     )
+    #     obj = ObjectiveFunction(GoodCoordinates(eq))
+    #     constraints = get_fixed_boundary_constraints(eq) + (FixThetaSFL(eq),)
+    #     eq.solve(
+    #         objective=obj,
+    #         constraints=constraints,
+    #         ftol=0,
+    #         xtol=0,
+    #         gtol=1e-8,
+    #         verbose=0,
+    #         optimizer="fmintr-bfgs",
+    #     )
+    #     warnif(
+    #         not eq.is_nested(),
+    #         UserWarning,
+    #         "Surfaces still not nested after refinement. This is possibly because "
+    #         + "the boundary contains self-intersections or other singularities, or "
+    #         + "because the refinement requires more iterations. You may need to "
+    #         + "manually adjust the initial guess or do further refinement using the "
+    #         + "GoodCoordinates objective.",
+    #     )
+
+    # return eq
+
+
+
 def _initial_guess_surface(x_basis, b_lmn, b_basis, axis=None, mode=None, coord=None):
     """Create an initial guess from boundary coefficients and a magnetic axis guess.
 

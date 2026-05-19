@@ -324,7 +324,7 @@ class FourierZernikeRZToroidalVolume(Volume):
             self._M = M
             self._N = N
     
-class GeneralizedZernikeRZToroidalVolume(Volume):
+class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     """Toroidal volume represented by Generalized Fourier-Zernike polynomials.
     
     Parameters

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from desc.basis import FourierZernikeBasis, SharpFourierZernikeBasis
-from desc.geometry.volume import FourierZernikeRZToroidalVolume, GeneralizedZernikeRZToroidalVolume
+from desc.geometry.volume import FourierZernikeRZToroidalVolume, GeneralizedFourierZernikeRZToroidalVolume
 from desc.grid import Grid
 from desc.transform import Transform
 
@@ -152,7 +152,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_initialization_defaults(self):
         """Test basic initialization with default parameters."""
-        vol = GeneralizedZernikeRZToroidalVolume()
+        vol = GeneralizedFourierZernikeRZToroidalVolume()
         assert vol.NFP == 1
         assert vol.name == ""
         # Check default coefficients
@@ -173,7 +173,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
         Z_lmn = np.array([0, -3, 0.1, 0.1])
         modes_R = np.array([[0, 0, 0], [1, 1, 0], [-1, 1, 0], [-2, 0, 2]])
         modes_Z = np.array([[0, 0, 0], [1, -1, 0], [-1, -1, 0], [0, 0, 2]])
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             R_lmn=R_lmn, Z_lmn=Z_lmn, modes_R=modes_R, modes_Z=modes_Z, 
             NFP=2, m_b=2, n_b=2, name="test"
         )
@@ -202,7 +202,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_resolution_properties(self):
         """Test resolution getters for generalized toroidal volume."""
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             NFP=3,
             L=2,
             M=3,
@@ -226,7 +226,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_change_resolution(self):
         """Test changing the resolution of the generalized toroidal volume."""
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             NFP=1,
             L=1,
             M=1,
@@ -274,7 +274,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
         Z_lmn = np.array([0, -3, 0.1, 0.1])
         modes_R = np.array([[0, 0, 0], [1, 1, 0], [-1, 1, 0], [-2, 0, 2]])
         modes_Z = np.array([[0, 0, 0], [1, -1, 0], [-1, -1, 0], [0, 0, 2]])
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             R_lmn=R_lmn, Z_lmn=Z_lmn, modes_R=modes_R, modes_Z=modes_Z, 
             NFP=2, m_b=2, n_b=2, name="test"
         )
@@ -291,7 +291,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
         Z_lmn = np.array([0, -3, 0.1, 0.1])
         modes_R = np.array([[0, 0, 0], [1, 1, 0], [-1, 1, 0], [-2, 0, 2]])
         modes_Z = np.array([[0, 0, 0], [1, -1, 0], [-1, -1, 0], [0, 0, 2]])
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             R_lmn=R_lmn, Z_lmn=Z_lmn, modes_R=modes_R, modes_Z=modes_Z, 
             NFP=2, m_b=2, n_b=2, name="test"
         )
@@ -308,7 +308,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
         Z_lmn = np.array([0, -3, 0.1, 0.1])
         modes_R = np.array([[0, 0, 0], [1, 1, 0], [-1, 1, 0], [-2, 0, 2]])
         modes_Z = np.array([[0, 0, 0], [1, -1, 0], [-1, -1, 0], [0, 0, 2]])
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
             R_lmn=R_lmn, Z_lmn=Z_lmn, modes_R=modes_R, modes_Z=modes_Z, 
             NFP=2, m_b=2, n_b=2, name="test"
         )
@@ -321,7 +321,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_get_coeffs_nonexistent_mode(self):
         """Test get_coeffs for a mode not in the basis returns zero."""
-        vol = GeneralizedZernikeRZToroidalVolume()
+        vol = GeneralizedFourierZernikeRZToroidalVolume()
         R, Z = vol.get_coeffs(2, 0, 0)  # l=2 not in basis
         np.testing.assert_allclose(R, [0])
         np.testing.assert_allclose(Z, [0])
@@ -329,7 +329,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_single_mode_R(self):
         """Test set_coeffs for a single R coefficient."""
-        vol = GeneralizedZernikeRZToroidalVolume(M_shp=1)
+        vol = GeneralizedFourierZernikeRZToroidalVolume(M_shp=1)
         vol.set_coeffs(-1, 1, 0, R=15.0)
         R, Z = vol.get_coeffs(-1, 1, 0)
         np.testing.assert_allclose(R, [15.0])
@@ -340,7 +340,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_single_mode_Z(self):
         """Test set_coeffs for a single Z coefficient."""
-        vol = GeneralizedZernikeRZToroidalVolume()
+        vol = GeneralizedFourierZernikeRZToroidalVolume()
         vol.set_coeffs(1, -1, 0, Z=-2.0)
         R, Z = vol.get_coeffs(1, -1, 0)
         np.testing.assert_allclose(Z, [-2.0])
@@ -351,7 +351,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_multiple_modes(self):
         """Test set_coeffs for multiple modes."""
-        vol = GeneralizedZernikeRZToroidalVolume(M_shp=1)
+        vol = GeneralizedFourierZernikeRZToroidalVolume(M_shp=1)
         vol.set_coeffs([-1, 0], [1, 0], [0, 0], R=[20.0, 3.0])
         R, Z = vol.get_coeffs([-1, 0], [1, 0], [0, 0])
         np.testing.assert_allclose(R, [20.0, 3.0])
@@ -359,7 +359,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_set_coeffs_both_R_and_Z(self):
         """Test set_coeffs setting both R and Z for the same mode."""
-        vol = GeneralizedZernikeRZToroidalVolume(sym=False, M_shp=1)
+        vol = GeneralizedFourierZernikeRZToroidalVolume(sym=False, M_shp=1)
         vol.set_coeffs(-1, 1, 0, R=25.0, Z=5.0)
         R, Z = vol.get_coeffs(-1, 1, 0)
         np.testing.assert_allclose(R, [25.0])
@@ -368,7 +368,7 @@ class TestGeneralizedZernikeRZToroidalVolume:
     @pytest.mark.unit
     def test_get_axis(self):
         """Test get_axis returns correct magnetic axis."""
-        vol = GeneralizedZernikeRZToroidalVolume(
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
                     R_lmn=[1, 0.5, 0.1],
                     Z_lmn=[0.5, -1],
                     modes_R=[[1, 1, 0], [2, 0, 2], [-1, 1, 0]],

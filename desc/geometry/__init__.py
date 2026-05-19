@@ -9,4 +9,4 @@ from .curve import (
     SplineXYZCurve,
 )
 from .surface import FourierRZToroidalSurface, ZernikeRZToroidalSection
-from .volume import FourierZernikeRZToroidalVolume, GeneralizedZernikeRZToroidalVolume
+from .volume import FourierZernikeRZToroidalVolume, GeneralizedFourierZernikeRZToroidalVolume

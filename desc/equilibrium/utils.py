@@ -12,7 +12,7 @@ from desc.geometry import (
     ZernikeRZToroidalSection,
     VolumeRegion,
     FourierZernikeRZToroidalVolume,
-    GeneralizedZernikeRZToroidalVolume,
+    GeneralizedFourierZernikeRZToroidalVolume,
 )
 from desc.profiles import PowerSeriesProfile, _Profile
 from desc.utils import warnif
@@ -224,7 +224,7 @@ def parse_axis(axis, NFP=1, sym=True, boundary=None):
             axis = boundary.get_axis()
         elif isinstance(boundary, FourierZernikeRZToroidalVolume):
             axis = boundary.get_axis()
-        elif isinstance(boundary, GeneralizedZernikeRZToroidalVolume):
+        elif isinstance(boundary, GeneralizedFourierZernikeRZToroidalVolume):
             axis = boundary.get_axis()
     else:
         raise TypeError("Got unknown axis type {}".format(axis))

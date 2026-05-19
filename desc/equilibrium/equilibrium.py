@@ -11,7 +11,7 @@ from scipy import special
 from scipy.constants import mu_0
 
 from desc.backend import execute_on_cpu, jnp
-from desc.basis import FourierZernikeBasis, fourier, zernike_radial
+from desc.basis import FourierZernikeBasis, fourier, zernike_radial, GeneralizedFourierZernikeBasis
 from desc.compat import ensure_positive_jacobian
 from desc.compute import compute as compute_fun
 from desc.compute import data_index
@@ -26,7 +26,7 @@ from desc.geometry import (
     FourierRZCurve,
     FourierRZToroidalSurface,
     ZernikeRZToroidalSection,
-    GeneralizedZernikeRZToroidalVolume
+    GeneralizedFourierZernikeRZToroidalVolume
 )
 from desc.grid import Grid, LinearGrid, QuadratureGrid, _Grid
 from desc.input_reader import InputReader
@@ -62,7 +62,7 @@ from .coords import (
     map_coordinates,
     to_sfl,
 )
-from .initial_guess import set_initial_guess
+from .initial_guess import set_initial_guess, set_initial_guess_sharp
 from .utils import (
     ensure_consistent_profile_eq_resolution,
     parse_axis,
@@ -3013,9 +3013,9 @@ class SharpEquilibrium(IOAble, Optimizable):
         self,
         Psi=1.0,
         NFP=None,
-        L_std=None,
-        M_std=None,
-        N_std=None,
+        L=None,
+        M=None,
+        N=None,
         L_shp=None,
         M_shp=None,
         N_shp=None,
@@ -3082,7 +3082,7 @@ class SharpEquilibrium(IOAble, Optimizable):
 
         # volume
 
-        if not isinstance(volume, GeneralizedZernikeRZToroidalVolume):
+        if not isinstance(volume, GeneralizedFourierZernikeRZToroidalVolume):
             raise TypeError("volume must be a GeneralizedZernikeRZToroidalVolume")
         self._volume, self._bdry_mode = parse_volume(
             volume, self.NFP, self.sym, self.spectral_indexing
@@ -3092,9 +3092,9 @@ class SharpEquilibrium(IOAble, Optimizable):
         self._axis = parse_axis(axis, self.NFP, self.sym, self.volume)
 
         # resolution
-        L_std = check_nonnegint(L_std, "L_std")
-        M_std = check_nonnegint(M_std, "M_std")
-        N_std = check_nonnegint(N_std, "N_std")
+        L = check_nonnegint(L, "L_std")
+        M = check_nonnegint(M, "M_std")
+        N = check_nonnegint(N, "N_std")
         L_shp = check_nonnegint(L_shp, "L_shp")
         M_shp = check_nonnegint(M_shp, "M_shp")
         N_shp = check_nonnegint(N_shp, "N_shp")
@@ -3102,11 +3102,11 @@ class SharpEquilibrium(IOAble, Optimizable):
         M_grid = check_nonnegint(M_grid, "M_grid")
         N_grid = check_nonnegint(N_grid, "N_grid")
 
-        self._N_std = int(setdefault(N_std, self.volume.N_std))
-        self._M_std = int(setdefault(M_std, self.volume.M_std))
-        self._L_std = int(
+        self._N = int(setdefault(N, self.volume.N_std))
+        self._M = int(setdefault(M, self.volume.M_std))
+        self._L = int(
             setdefault(
-                L_std,
+                L,
                 max(
                     self.volume.L_std,
                     self.M_std if (self.spectral_indexing == "ansi") else 2 * self.M_std,
@@ -3128,32 +3128,47 @@ class SharpEquilibrium(IOAble, Optimizable):
         self._M_grid = setdefault(M_grid, 2 * self.M)
         self._N_grid = setdefault(N_grid, 2 * self.N)
 
-        # HERE HERE HERE 
-
-        self._surface.change_resolution(self.L, self.M, self.N, sym=self.sym)
+        self._volume.change_resolution(
+            self.L, 
+            self.M, 
+            self.N, 
+            self.L_shp, 
+            self.M_shp, 
+            self.N_shp, 
+            sym=self.sym
+            )
         self._axis.change_resolution(self.N, sym=self.sym)
 
         # bases
-        self._R_basis = FourierZernikeBasis(
+        self._R_basis = GeneralizedFourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
+            L_shp=self.L_shp,
+            M_shp=self.M_shp,
+            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._R_sym,
             spectral_indexing=self.spectral_indexing,
         )
-        self._Z_basis = FourierZernikeBasis(
+        self._Z_basis = GeneralizedFourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
+            L_shp=self.L_shp,
+            M_shp=self.M_shp,
+            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
         )
-        self._L_basis = FourierZernikeBasis(
+        self._L_basis = GeneralizedFourierZernikeBasis(
             L=self.L,
             M=self.M,
             N=self.N,
+            L_shp=self.L_shp,
+            M_shp=self.M_shp,
+            N_shp=self.N_shp,
             NFP=self.NFP,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
@@ -3224,20 +3239,20 @@ class SharpEquilibrium(IOAble, Optimizable):
 
         # ensure number of field periods agree before setting guesses
         eq_NFP = self.NFP
-        surf_NFP = self.surface.NFP if hasattr(self.surface, "NFP") else self.NFP
+        vol_NFP = self.volume.NFP if hasattr(self.volume, "NFP") else self.NFP
         axis_NFP = self._axis.NFP
         errorif(
-            not (eq_NFP == surf_NFP == axis_NFP),
+            not (eq_NFP == vol_NFP == axis_NFP),
             ValueError,
             "Unequal number of field periods for equilibrium "
-            + f"{eq_NFP}, surface {surf_NFP}, and axis {axis_NFP}",
+            + f"{eq_NFP}, volume {vol_NFP}, and axis {axis_NFP}",
         )
 
         # make sure symmetry agrees
         errorif(
-            self.sym != self.surface.sym,
+            self.sym != self.volume.sym,
             ValueError,
-            "Surface and Equilibrium must have the same symmetry",
+            "VolumeRegion and SharpEquilibrium must have the same symmetry",
         )
         self._R_lmn = np.zeros(self.R_basis.num_modes)
         self._Z_lmn = np.zeros(self.Z_basis.num_modes)
@@ -3256,5 +3271,649 @@ class SharpEquilibrium(IOAble, Optimizable):
             errorif(
                 len(kwargs),
                 TypeError,
-                f"Equilibrium got unexpected kwargs: {kwargs.keys()}",
+                f"SharpEquilibrium got unexpected kwargs: {kwargs.keys()}",
             )
+
+
+    def set_initial_guess(self, *args, ensure_nested=True):
+        """Set the initial guess for the flux surfaces, eg R_lmn, Z_lmn, L_lmn.
+
+        Parameters
+        ----------
+        eq : SharpEquilibrium
+            SharpEquilibrium to initialize
+        args :
+            either:
+              - No arguments, in which case eq.volume will be scaled for the guess.
+              - Another VolumeRegion object, which will be scaled to generate the guess.
+              - Another SharpEquilibrium, whose flux surfaces will be used.
+              - Grid and 2-3 ndarrays, specifying the flux surface locations (R, Z, and
+                optionally lambda) at fixed flux coordinates. All arrays should have the
+                same length. Optionally, an ndarray of shape(k,3) may be passed instead
+                of a grid.
+        ensure_nested : bool
+            If True, and the default initial guess does not produce nested surfaces,
+            run a small optimization problem to attempt to refine initial guess to
+            improve coordinate mapping.
+
+        Examples
+        --------
+        Use existing equil.surface and scales down for guess:
+
+        >>> equil.set_initial_guess()
+
+        Use supplied VolumeRegion and scales down for guess. Assumes axis is centroid
+        of user supplied surface:
+
+        >>> equil.set_initial_guess(volume)
+
+        Use the flux surfaces from an existing Equilibrium:
+
+        >>> equil.set_initial_guess(equil2)
+
+        Use flux surfaces specified by points:
+        nodes should either be a Grid or an ndarray, shape(k,3) giving the locations
+        in rho, theta, zeta coordinates. R, Z, and optionally lambda should be
+        array-like, shape(k,) giving the corresponding real space coordinates
+
+        >>> equil.set_initial_guess(nodes, R, Z, lambda)
+
+        """
+        set_initial_guess_sharp(self, *args, ensure_nested=ensure_nested)
+
+
+    @property
+    def volume(self):
+        """Surface: Geometric surface defining boundary conditions."""
+        return self._volume
+
+    @volume.setter
+    def volume(self, new):
+        assert isinstance(
+            new, GeneralizedFourierZernikeRZToroidalVolume
+        ), f"surface should be of type GeneralizedFourierZernikeRZToroidalVolume or subclass, got {new}"
+        assert (
+            self.sym == new.sym
+        ), "VolumeRegion and SharpEquilibrium must have the same symmetry"
+        assert self.NFP == new.NFP, "VolumeRegion and Equilibrium must have the same NFP"
+        new.change_resolution(self.L, self.M, self.N)
+        self._volume = new
+
+    @property
+    def axis(self):
+        """Curve: object representing the magnetic axis."""
+        return self._axis
+
+    @axis.setter
+    def axis(self, new):
+        assert isinstance(
+            new, FourierRZCurve
+        ), f"axis should be of type FourierRZCurve or a subclass, got {new}"
+        assert self.sym == new.sym, "Axis and Equilibrium must have the same symmetry"
+        assert self.NFP == new.NFP, "Axis and Equilibrium must have the same NFP"
+        new.change_resolution(self.N)
+        self._axis = new
+
+    @property
+    def spectral_indexing(self):
+        """str: Type of indexing used for the spectral basis."""
+        return self._spectral_indexing
+
+    @property
+    def sym(self):
+        """bool: Whether this equilibrium is stellarator symmetric."""
+        return self._sym
+
+    @property
+    def bdry_mode(self):
+        """str: Method for specifying boundary condition."""
+        return self._bdry_mode
+
+    @optimizable_parameter
+    @property
+    def Psi(self):
+        """float: Total toroidal flux within the last closed flux surface in Webers."""
+        return self._Psi
+
+    @Psi.setter
+    def Psi(self, Psi):
+        self._Psi = jnp.float64(float(np.squeeze(Psi)))
+
+    @property
+    def NFP(self):
+        """int: Number of (toroidal) field periods."""
+        return self._NFP
+
+    @property
+    def L(self):
+        """int: Maximum radial mode number."""
+        return self._L
+
+    @property
+    def M(self):
+        """int: Maximum poloidal fourier mode number."""
+        return self._M
+
+    @property
+    def N(self):
+        """int: Maximum toroidal fourier mode number."""
+        return self._N
+    
+    @property
+    def L_shp(self):
+        """int: Maximum radial mode number of sharp piece."""
+        return self._L_shp
+
+    @property
+    def M(self):
+        """int: Maximum poloidal fourier mode number of sharp piece."""
+        return self._M_shp
+
+    @property
+    def N(self):
+        """int: Maximum toroidal fourier mode number of sharp piece."""
+        return self._N_shp
+
+    @optimizable_parameter
+    @property
+    def R_lmn(self):
+        """ndarray: Spectral coefficients of R."""
+        return self._R_lmn
+
+    @R_lmn.setter
+    def R_lmn(self, R_lmn):
+        R_lmn = jnp.atleast_1d(jnp.asarray(R_lmn))
+        errorif(
+            R_lmn.size != self._R_lmn.size,
+            ValueError,
+            "R_lmn should have the same size as R_basis, "
+            + f"got {len(R_lmn)} for basis with {self.R_basis.num_modes} modes",
+        )
+        self._R_lmn = R_lmn
+
+    @optimizable_parameter
+    @property
+    def Z_lmn(self):
+        """ndarray: Spectral coefficients of Z."""
+        return self._Z_lmn
+
+    @Z_lmn.setter
+    def Z_lmn(self, Z_lmn):
+        Z_lmn = jnp.atleast_1d(jnp.asarray(Z_lmn))
+        errorif(
+            Z_lmn.size != self._Z_lmn.size,
+            ValueError,
+            "Z_lmn should have the same size as Z_basis, "
+            + f"got {len(Z_lmn)} for basis with {self.Z_basis.num_modes} modes",
+        )
+        self._Z_lmn = Z_lmn
+
+    @optimizable_parameter
+    @property
+    def L_lmn(self):
+        """ndarray: Spectral coefficients of lambda."""
+        return self._L_lmn
+
+    @L_lmn.setter
+    def L_lmn(self, L_lmn):
+        L_lmn = jnp.atleast_1d(jnp.asarray(L_lmn))
+        errorif(
+            L_lmn.size != self._L_lmn.size,
+            ValueError,
+            "L_lmn should have the same size as L_basis, "
+            + f"got {len(L_lmn)} for basis with {self.L_basis.num_modes} modes",
+        )
+        self._L_lmn = L_lmn
+
+    @optimizable_parameter
+    @property
+    def Rb_lmn(self):
+        """ndarray: Spectral coefficients of R of the VolumeRegion boundary."""
+        return self.surface.R_lmn
+
+    @Rb_lmn.setter
+    def Rb_lmn(self, Rb_lmn):
+        self.volume.R_lmn = Rb_lmn
+
+    @optimizable_parameter
+    @property
+    def Zb_lmn(self):
+        """ndarray: Spectral coefficients of Z of the VolumeRegion boundary."""
+        return self.volume.Z_lmn
+
+    @Zb_lmn.setter
+    def Zb_lmn(self, Zb_lmn):
+        self.volume.Z_lmn = Zb_lmn
+
+    # @optimizable_parameter
+    # @property
+    # def I(self):  # noqa: E743
+    #     """float: Net toroidal current on the sheet current at the LCFS."""
+    #     return self.volume.I if hasattr(self.volume, "I") else np.empty(0)
+
+    # @I.setter
+    # def I(self, new):  # noqa: E743
+    #     errorif(
+    #         not hasattr(self.volume, "I"),
+    #         ValueError,
+    #         "Attempt to set I on an equilibrium without sheet current",
+    #     )
+    #     self.volume.I = new
+
+    # @optimizable_parameter
+    # @property
+    # def G(self):
+    #     """float: Net poloidal current on the sheet current at the LCFS."""
+    #     return self.volume.G if hasattr(self.volume, "G") else np.empty(0)
+
+    # @G.setter
+    # def G(self, new):
+    #     errorif(
+    #         not hasattr(self.volume, "G"),
+    #         ValueError,
+    #         "Attempt to set G on an equilibrium without sheet current",
+    #     )
+    #     self.volume.G = new
+
+    # @optimizable_parameter
+    # @property
+    # def Phi_mn(self):
+    #     """ndarray: coeffs of single-valued part of surface current potential."""
+    #     return self.volume.Phi_mn if hasattr(self.volume, "Phi_mn") else np.empty(0)
+
+    # @Phi_mn.setter
+    # def Phi_mn(self, new):
+    #     errorif(
+    #         not hasattr(self.surface, "Phi_mn"),
+    #         ValueError,
+    #         "Attempt to set Phi_mn on an equilibrium without sheet current",
+    #     )
+    #     self.surface.Phi_mn = new
+
+    @optimizable_parameter
+    @property
+    def Ra_n(self):
+        """ndarray: R coefficients for axis Fourier series."""
+        return self.axis.R_n
+
+    @Ra_n.setter
+    def Ra_n(self, Ra_n):
+        self.axis.R_n = Ra_n
+
+    @optimizable_parameter
+    @property
+    def Za_n(self):
+        """ndarray: Z coefficients for axis Fourier series."""
+        return self.axis.Z_n
+
+    @Za_n.setter
+    def Za_n(self, Za_n):
+        self.axis.Z_n = Za_n
+
+    @property
+    def pressure(self):
+        """Profile: Pressure (Pa) profile."""
+        return self._pressure
+
+    @pressure.setter
+    def pressure(self, new):
+        self._pressure = parse_profile(new, "pressure")
+        self._pressure = ensure_consistent_profile_eq_resolution(
+            self._pressure, self, name="pressure"
+        )
+        has_kinetic = any(
+            [getattr(self, name, None) is not None for name in _kinetic_profile_names]
+        )  # don't warn if pressure is being set to None
+        warnif(
+            has_kinetic and new is not None,
+            UserWarning,
+            "Pressure profile is being assigned to an "
+            "equilibrium which already has at least one kinetic profile assigned to"
+            " it. The default is to use the equilibrium's assigned pressure profile"
+            " for all computations. It is recommended to remove the unneeded "
+            "profile(s) to avoid unexpected behavior, by setting them to None",
+        )
+
+    @optimizable_parameter
+    @property
+    def p_l(self):
+        """ndarray: Coefficients of pressure profile."""
+        return np.empty(0) if self.pressure is None else self.pressure.params
+
+    @p_l.setter
+    def p_l(self, p_l):
+        errorif(
+            self.pressure is None,
+            ValueError,
+            "Attempt to set pressure on an equilibrium with fixed kinetic profiles",
+        )
+        self.pressure.params = p_l
+
+    @property
+    def anisotropy(self):
+        """Profile: Anisotropy profile."""
+        return self._anisotropy
+
+    @anisotropy.setter
+    def anisotropy(self, new):
+        self._anisotropy = parse_profile(new, "anisotropy")
+
+    @optimizable_parameter
+    @property
+    def a_lmn(self):
+        """ndarray: Coefficients of anisotropy profile."""
+        return np.empty(0) if self.anisotropy is None else self.anisotropy.params
+
+    @a_lmn.setter
+    def a_lmn(self, a_lmn):
+        errorif(
+            self.anisotropy is None,
+            ValueError,
+            "Attempt to set anisotropy on an equilibrium without anisotropy profile",
+        )
+        self.anisotropy.params = a_lmn
+
+    @property
+    def electron_temperature(self):
+        """Profile: Electron temperature (eV) profile."""
+        return self._electron_temperature
+
+    @electron_temperature.setter
+    def electron_temperature(self, new):
+        self._electron_temperature = parse_profile(new, "electron temperature")
+        self._electron_temperature = ensure_consistent_profile_eq_resolution(
+            self._electron_temperature, self, name="electron temperature"
+        )
+
+        warnif(
+            self._pressure is not None,
+            UserWarning,
+            "Electron temperature profile is being assigned to an "
+            "equilibrium which already has an existing pressure profile. The default "
+            "is to use the equilibrium's assigned pressure profile for all"
+            " computations. It is recommended to remove the unneeded profile(s) "
+            "to avoid unexpected behavior, by setting them to None.",
+        )
+
+    @optimizable_parameter
+    @property
+    def Te_l(self):
+        """ndarray: Coefficients of electron temperature profile."""
+        return (
+            np.empty(0)
+            if self.electron_temperature is None
+            else self.electron_temperature.params
+        )
+
+    @Te_l.setter
+    def Te_l(self, Te_l):
+        errorif(
+            self.electron_temperature is None,
+            ValueError,
+            "Attempt to set electron temperature on an equilibrium with fixed pressure",
+        )
+        self.electron_temperature.params = Te_l
+
+    @property
+    def electron_density(self):
+        """Profile: Electron density (m^-3) profile."""
+        return self._electron_density
+
+    @electron_density.setter
+    def electron_density(self, new):
+        self._electron_density = parse_profile(new, "electron density")
+        self._electron_density = ensure_consistent_profile_eq_resolution(
+            self._electron_density, self, name="electron density"
+        )
+
+        warnif(
+            self._pressure is not None,
+            UserWarning,
+            "Electron density profile is being assigned to an "
+            "equilibrium which already has an existing pressure profile. The default "
+            "is to use the equilibrium's assigned pressure profile for all"
+            " computations. It is recommended to remove the unneeded profile(s) "
+            "to avoid unexpected behavior, by setting them to None.",
+        )
+
+    @optimizable_parameter
+    @property
+    def ne_l(self):
+        """ndarray: Coefficients of electron density profile."""
+        return (
+            np.empty(0)
+            if self.electron_density is None
+            else self.electron_density.params
+        )
+
+    @ne_l.setter
+    def ne_l(self, ne_l):
+        errorif(
+            self.electron_density is None,
+            ValueError,
+            "Attempt to set electron density on an equilibrium with fixed pressure",
+        )
+        self.electron_density.params = ne_l
+
+    @property
+    def ion_temperature(self):
+        """Profile: ion temperature (eV) profile."""
+        return self._ion_temperature
+
+    @ion_temperature.setter
+    def ion_temperature(self, new):
+        self._ion_temperature = parse_profile(new, "ion temperature")
+        self._ion_temperature = ensure_consistent_profile_eq_resolution(
+            self._ion_temperature, self, name="ion temperature"
+        )
+        warnif(
+            self._pressure is not None,
+            UserWarning,
+            "Ion density profile is being assigned to an "
+            "equilibrium which already has an existing pressure profile. The default "
+            "is to use the equilibrium's assigned pressure profile for all"
+            " computations. It is recommended to remove the unneeded profile(s) "
+            "to avoid unexpected behavior, by setting them to None.",
+        )
+
+    @optimizable_parameter
+    @property
+    def Ti_l(self):
+        """ndarray: Coefficients of ion temperature profile."""
+        return (
+            np.empty(0) if self.ion_temperature is None else self.ion_temperature.params
+        )
+
+    @Ti_l.setter
+    def Ti_l(self, Ti_l):
+        errorif(
+            self.ion_temperature is None,
+            ValueError,
+            "Attempt to set ion temperature on an equilibrium with fixed pressure",
+        )
+        self.ion_temperature.params = Ti_l
+
+    @property
+    def atomic_number(self):
+        """Profile: Effective atomic number (Z_eff) profile."""
+        return self._atomic_number
+
+    @atomic_number.setter
+    def atomic_number(self, new):
+        self._atomic_number = parse_profile(new, "atomic number")
+        self._atomic_number = ensure_consistent_profile_eq_resolution(
+            self._atomic_number, self, name="atomic number"
+        )
+
+        warnif(
+            self._pressure is not None,
+            UserWarning,
+            "Atomic number profile is being assigned to an "
+            "equilibrium which already has an existing pressure profile. The default "
+            "is to use the equilibrium's assigned pressure profile for all"
+            " computations. It is recommended to remove the unneeded profile(s) "
+            "to avoid unexpected behavior, by setting them to None.",
+        )
+
+    @optimizable_parameter
+    @property
+    def Zeff_l(self):
+        """ndarray: Coefficients of effective atomic number profile."""
+        return np.empty(0) if self.atomic_number is None else self.atomic_number.params
+
+    @Zeff_l.setter
+    def Zeff_l(self, Zeff_l):
+        errorif(
+            self.atomic_number is None,
+            ValueError,
+            "Attempt to set atomic number on an equilibrium with fixed pressure",
+        )
+        self.atomic_number.params = Zeff_l
+
+    @property
+    def iota(self):
+        """Profile: Rotational transform (iota) profile."""
+        return self._iota
+
+    @iota.setter
+    def iota(self, new):
+        self._iota = parse_profile(new, "iota")
+        self._iota = ensure_consistent_profile_eq_resolution(
+            self._iota, self, name="iota"
+        )
+        if self.iota is None:
+            return
+        warnif(
+            self.current is not None,
+            UserWarning,
+            "Setting rotational transform profile on an equilibrium "
+            + "with fixed toroidal current, removing existing toroidal"
+            " current profile.",
+        )
+        self._current = None
+
+    @optimizable_parameter
+    @property
+    def i_l(self):
+        """ndarray: Coefficients of iota profile."""
+        return np.empty(0) if self.iota is None else self.iota.params
+
+    @i_l.setter
+    def i_l(self, i_l):
+        errorif(
+            self.iota is None,
+            ValueError,
+            "Attempt to set parameters of rotational transform on an equilibrium"
+            + "with fixed toroidal current",
+        )
+        self.iota.params = i_l
+
+    @property
+    def current(self):
+        """Profile: Toroidal current profile (I)."""
+        return self._current
+
+    @current.setter
+    def current(self, new):
+        self._current = parse_profile(new, "current")
+        self._current = ensure_consistent_profile_eq_resolution(
+            self._current, self, name="current"
+        )
+        if self.current is None:
+            return
+        warnif(
+            self.iota is not None,
+            UserWarning,
+            "Setting toroidal current profile on an equilibrium "
+            + "with fixed rotational transform, removing existing rotational"
+            " transform profile.",
+        )
+        self._iota = None
+        axis_current = np.squeeze(self.current(0.0))
+        warnif(
+            np.abs(axis_current) > 1e-8,
+            UserWarning,
+            f"Current on axis is nonzero, got {axis_current:.3e} Amps",
+        )
+
+    @optimizable_parameter
+    @property
+    def c_l(self):
+        """ndarray: Coefficients of current profile."""
+        return np.empty(0) if self.current is None else self.current.params
+
+    @c_l.setter
+    def c_l(self, c_l):
+        errorif(
+            self.current is None,
+            ValueError,
+            "Attempt to set parameters of toroidal current on an equilibrium with "
+            + "fixed rotational transform",
+        )
+        self.current.params = c_l
+        axis_current = np.squeeze(self.current(0.0))
+        warnif(
+            np.abs(axis_current) > 1e-8,
+            UserWarning,
+            f"Current on axis is nonzero, got {axis_current:.3e} Amps",
+        )
+
+    @property
+    def R_basis(self):
+        """GeneralizedFourierZernikeBasis: Spectral basis for R."""
+        return self._R_basis
+
+    @property
+    def Z_basis(self):
+        """GeneralizedFourierZernikeBasis: Spectral basis for Z."""
+        return self._Z_basis
+
+    @property
+    def L_basis(self):
+        """GeneralizedFourierZernikeBasis: Spectral basis for lambda."""
+        return self._L_basis
+
+    @property
+    def L_grid(self):
+        """int: Radial resolution of grid in real space."""
+        return self._L_grid
+
+    @L_grid.setter
+    def L_grid(self, L_grid):
+        if self.L_grid != L_grid:
+            self._L_grid = L_grid
+
+    @property
+    def M_grid(self):
+        """int: Poloidal resolution of grid in real space."""
+        return self._M_grid
+
+    @M_grid.setter
+    def M_grid(self, M_grid):
+        if self.M_grid != M_grid:
+            self._M_grid = M_grid
+
+    @property
+    def N_grid(self):
+        """int: Toroidal resolution of grid in real space."""
+        return self._N_grid
+
+    @N_grid.setter
+    def N_grid(self, N_grid):
+        if self.N_grid != N_grid:
+            self._N_grid = N_grid
+
+    @property
+    def resolution(self):
+        """dict: Spectral and real space resolution parameters of the Equilibrium."""
+        return {
+            "L": self.L,
+            "M": self.M,
+            "N": self.N,
+            "L_shp": self.L_shp,
+            "M_shp": self.M_shp,
+            "N_shp": self.N_shp,
+            "L_grid": self.L_grid,
+            "M_grid": self.M_grid,
+            "N_grid": self.N_grid,
+        }
