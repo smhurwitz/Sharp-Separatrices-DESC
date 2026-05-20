@@ -8,6 +8,7 @@ import mpmath
 import numpy as np
 
 from desc.backend import custom_jvp, fori_loop, jit, jnp, sign, jax
+from desc.derivatives import Derivative
 from desc.grid import Grid, _Grid
 from desc.io import IOAble
 from desc.utils import check_nonnegint, check_posint, flatten_list
@@ -2068,26 +2069,6 @@ class SharpFourierZernikeBasis(_Basis):
         _, m, n = modes.T
         lm = modes[:, :2]
 
-        try:
-            ridx = grid.unique_rho_idx
-            routidx = grid.inverse_rho_idx
-        except AttributeError:
-            ridx = routidx = np.arange(grid.num_nodes)
-        try:
-            tidx = grid.unique_theta_idx
-            toutidx = grid.inverse_theta_idx
-        except AttributeError:
-            tidx = toutidx = np.arange(grid.num_nodes)
-        try:
-            zidx = grid.unique_zeta_idx
-            zoutidx = grid.inverse_zeta_idx
-        except AttributeError:
-            zidx = zoutidx = np.arange(grid.num_nodes)
-
-        r = r[ridx]
-        t = t[tidx]
-        z = z[zidx]
-
         lm = lm[lmidx]
         m = m[midx]
         n = n[nidx]
@@ -2095,16 +2076,47 @@ class SharpFourierZernikeBasis(_Basis):
         dr = derivatives[0]
         dt = derivatives[1]
         dz = derivatives[2]
-        if dr != 0 or dt != 0 or dz != 0:
-            raise NotImplementedError("Not yet implemented.")
+        
+        def f(r, t, z):
+            """Undifferentiated output function. """
+            r = jnp.atleast_1d(r)
+            t = jnp.atleast_1d(t)
+            z = jnp.atleast_1d(z)
+            rp = sharp_zernike(
+                r=r[:, np.newaxis],
+                t=t[:, np.newaxis],
+                z=z[:, np.newaxis],
+                l=lm[:, 0],
+                m=lm[:, 1],
+                dr=0,
+                dt=0,
+                dz=0,
+                m_b=self.m_b,
+                n_b=self.n_b,
+                β=self.β,
+                sharp_type=self.sharp_type,
+                number=self.number,
+            )
+            toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=0)
 
-        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
-        toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
+            rp = rp[:, lmoutidx]
+            toroidal = toroidal[:, noutidx]
 
-        rp = rp[routidx][:, lmoutidx]
-        toroidal = toroidal[zoutidx][:, noutidx]
+            return rp * toroidal
 
-        return rp * toroidal
+        def f_der(f, dr, dt, dz):
+            """Compute derivatives of f with JAX to order specified."""
+            g = f
+            for _ in range(dr):
+                g = Derivative(g, argnum=0, mode="rev")
+            for _ in range(dt):
+                g = Derivative(g, argnum=1, mode="rev")
+            for _ in range(dz):
+                g = Derivative(g, argnum=2, mode="rev")
+            return g
+
+        output = jax.vmap(f_der(f, dr, dt, dz))(r, t, z)
+        return output.squeeze(axis=1)
     
     def __eq__(self, other):
         """Check if two basis objects are equal."""
