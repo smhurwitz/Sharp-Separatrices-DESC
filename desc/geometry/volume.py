@@ -441,6 +441,8 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         M_shp = check_nonnegint(M_shp, "Msh")
         N_shp = check_nonnegint(N_shp, "Nsh")
         NFP = check_posint(NFP, "NFP", False)
+        m_b = check_posint(m_b, "m_b", False)
+        n_b = check_posint(n_b, "m_b", False)
         self._L = setdefault(L, max(LR, LZ))
         self._M = setdefault(M, max(MR, MZ))
         self._N = setdefault(N, max(NR, NZ, NR_sharp, NZ_sharp))
@@ -448,6 +450,8 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         self._M_shp = setdefault(M_shp, max(MR_sharp, MZ_sharp))
         self._N_shp = self._N
         self._NFP = NFP
+        self._m_b = m_b
+        self._n_b = n_b
 
         if sym == "auto":
             if np.all(
@@ -499,6 +503,16 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     def NFP(self):
         """int: Number of (toroidal) field periods."""
         return self._NFP
+    
+    @property
+    def m_b(self):
+        """Poloidal mode number associated with the boundary of the volume."""
+        return self._m_b
+    
+    @property
+    def n_b(self):
+        """Toroidal mode number associated with the boundary of the volume."""
+        return self._n_b
 
     @property
     def R_basis(self):
@@ -641,7 +655,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         np.add.at(R_n, R_inverse_indices, func_R)
         np.add.at(Z_n, Z_inverse_indices, func_Z)
 
-        curve = FourierRZCurve(R_n, Z_n, modes_R, modes_Z)
+        curve = FourierRZCurve(R_n, Z_n, modes_R, modes_Z, NFP=self.NFP)
         return curve
     
     @execute_on_cpu

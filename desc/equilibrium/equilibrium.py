@@ -2876,7 +2876,7 @@ class EquilibriaFamily(IOAble, MutableSequence):
             )
         self._equilibria.insert(i, new_item)
 
-class SharpEquilibrium(IOAble, Optimizable):
+class SharpEquilibrium(Equilibrium):
     """SharpEquilibrium is an object that represents a plasma equilibrium and
     provide an accurate representation of separatrices with sharp corners.
 
@@ -3036,8 +3036,8 @@ class SharpEquilibrium(IOAble, Optimizable):
         L_shp=None,
         M_shp=None,
         N_shp=None,
-        m_b=1,
-        n_b=1,
+        m_b=None,
+        n_b=None,
         β=0.75*np.pi,
         sharp_type="lens",
         L_grid=None,
@@ -3163,8 +3163,8 @@ class SharpEquilibrium(IOAble, Optimizable):
         n_b = check_nonnegint(n_b, "n_b")
         assert (β > 0 and β <= np.pi), "β must be between 0 and π"
         assert (sharp_type == "lens" or sharp_type == "hypergeometric"), "sharp_type must be lens or hypergeometric"
-        self._m_b = m_b
-        self._n_b = n_b
+        self._m_b = int(setdefault(m_b, self._volume.m_b))
+        self._n_b = int(setdefault(n_b, self._volume.n_b))
         self._β = β
         self._sharp_type = sharp_type
 
@@ -4410,3 +4410,6 @@ class SharpEquilibrium(IOAble, Optimizable):
             "M_grid": self.M_grid,
             "N_grid": self.N_grid,
         }
+    
+    def get_surface_at(**kwargs):
+        raise NotImplementedError("Not implemented in this class!")

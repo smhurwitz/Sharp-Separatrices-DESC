@@ -30,6 +30,7 @@ def ensure_positive_jacobian(eq):
         return eq
 
     sign = np.sign(eq.compute("sqrt(g)", grid=Grid(np.array([[1, 0, 0]])))["sqrt(g)"])
+    print(f"sign here is {sign}")
     errorif(
         sign == 0,
         ValueError,
@@ -65,6 +66,7 @@ def ensure_positive_jacobian(eq):
         sign = np.sign(
             eq.compute("sqrt(g)", grid=Grid(np.array([[1, 0, 0]])))["sqrt(g)"]
         )
+    print(f"sign = {sign}")
     assert sign == 1
     return eq
 

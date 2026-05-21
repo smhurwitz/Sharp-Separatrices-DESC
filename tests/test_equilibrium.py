@@ -506,7 +506,29 @@ def test_sharp_equilibrium_init_no_volume():
 @pytest.mark.unit
 def test_sharp_equilibrium_init_default_volume():
     """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
-    vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4)
+    vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4, m_b=5, n_b=5, NFP=5)
+    eq = SharpEquilibrium(volume=vol, ensure_nested=False, check_orientation=True)
+
+    expected_axis = vol.get_axis()
+    assert eq.volume is vol
+    assert isinstance(eq.axis, FourierRZCurve)
+    np.testing.assert_allclose(eq.axis.R_n, expected_axis.R_n)
+    np.testing.assert_allclose(eq.axis.Z_n, expected_axis.Z_n)
+    assert eq.axis.NFP == vol.NFP
+    assert eq.axis.sym == vol.sym
+    assert eq.R_lmn.shape == (eq.R_basis.num_modes,)
+    assert eq.Z_lmn.shape == (eq.Z_basis.num_modes,)
+    assert eq.L_lmn.shape == (eq.L_basis.num_modes,)
+    assert np.all(eq.R_lmn == vol.R_lmn)
+    assert np.all(eq.Z_lmn == vol.Z_lmn)
+    assert np.all(eq.L_lmn == np.zeros_like(eq.Z_lmn))
+    assert not np.all(eq.R_lmn == 0)
+    assert not np.all(eq.Z_lmn == 0)
+
+@pytest.mark.unit
+def test_sharp_equilibrium_init_default_volume_hypergeometric():
+    """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
+    vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4, m_b=5, n_b=5, NFP=5, sharp_type='hypergeometric')
     eq = SharpEquilibrium(volume=vol, ensure_nested=False, check_orientation=True)
 
     expected_axis = vol.get_axis()
