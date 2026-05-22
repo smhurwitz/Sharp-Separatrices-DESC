@@ -2134,8 +2134,7 @@ class SharpFourierZernikeBasis(_Basis):
                 g = Derivative(g, argnum=2, mode="rev")
             return g
 
-        output = jax.vmap(f_der(f, dr, dt, dz))(r, t, z)
-        return output.squeeze(axis=1)
+        return f_der(f, dr, dt, dz)(r, t, z)
     
     def __eq__(self, other):
         """Check if two basis objects are equal."""
