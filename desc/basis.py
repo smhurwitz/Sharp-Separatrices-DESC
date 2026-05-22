@@ -1802,14 +1802,33 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         """int: Maximum toroidal mode number of sharp piece."""
         return self._N_shp
 
-    
     def __repr__(self):
         """Get the string form of the object."""
-        raise NotImplementedError("TODO")
-    
+        return (
+            type(self).__name__
+            + " at "
+            + str(hex(id(self)))
+            + " (L={}, M={}, N={}, L_shp={}, M_shp={}, N_shp={}, NFP={}, sym={}, spectral_indexing={})".format(
+                self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp, self.NFP, self.sym, self.spectral_indexing
+            )
+        )
+
     def __hash__(self):
         """Get the hash of the object."""
-        raise NotImplementedError("TODO")
+        return hash(
+            (
+                self.__class__.__name__,
+                self._L,
+                self._M,
+                self._N,
+                self._L_shp,
+                self._M_shp,
+                self._N_shp,
+                self._NFP,
+                self._sym,
+                self._spectral_indexing,
+            )
+        )
 
     def __eq__(self, other):
         """Check if two basis objects are equal."""
