@@ -2086,91 +2086,92 @@ class SharpFourierZernikeBasis(_Basis):
         
         ###
 
-        r, t, z = grid.nodes.T
-        _, m, n = modes.T
-        lm = modes[:, :2]
+        # r, t, z = grid.nodes.T
+        # _, m, n = modes.T
+        # lm = modes[:, :2]
 
-        lm = lm[lmidx]
-        m = m[midx]
-        n = n[nidx]
+        # lm = lm[lmidx]
+        # m = m[midx]
+        # n = n[nidx]
 
-        dr = derivatives[0]
-        dt = derivatives[1]
-        dz = derivatives[2]
-        if dr != 0 or dt != 0 or dz != 0:
-            raise NotImplementedError("Not yet implemented.")
+        # dr = derivatives[0]
+        # dt = derivatives[1]
+        # dz = derivatives[2]
+        # if dr != 0 or dt != 0 or dz != 0:
+        #     raise NotImplementedError("Not yet implemented.")
 
-        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
-        toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
+        # rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
+        # toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
 
-        rp = rp[:, lmoutidx]
-        toroidal = toroidal[:, noutidx]
+        # rp = rp[:, lmoutidx]
+        # toroidal = toroidal[:, noutidx]
 
-        return rp * toroidal
+        # return rp * toroidal
 
         ###
 
-        # r, t, z = map(jnp.asarray, grid.nodes.T)
+        r, t, z = map(jnp.asarray, grid.nodes.T)
+        r = r - r * 1e-12 # to avoid nans evaluating right at boundary
 
-        # # requested derivative orders
-        # dr = int(derivatives[0])
-        # dt = int(derivatives[1])
-        # dz = int(derivatives[2])
+        # requested derivative orders
+        dr = int(derivatives[0])
+        dt = int(derivatives[1])
+        dz = int(derivatives[2])
 
-        # # mode arrays
-        # l_all, m_all, n_all = map(jnp.asarray, modes.T)
+        # mode arrays
+        l_all, m_all, n_all = map(jnp.asarray, modes.T)
 
-        # def scalar_mode_fun(rr, tt, zz, ll, mm, nn):
-        #     """Scalar basis function for one node and one mode."""
-        #     rp = sharp_zernike(
-        #         r=jnp.asarray([[rr]]),
-        #         t=jnp.asarray([[tt]]),
-        #         z=jnp.asarray([[zz]]),
-        #         l=jnp.asarray([ll]),
-        #         m=jnp.asarray([mm]),
-        #         dr=0,
-        #         dt=0,
-        #         dz=0,
-        #         m_b=self.m_b,
-        #         n_b=self.n_b,
-        #         β=self.β,
-        #         sharp_type=self.sharp_type,
-        #         number=self.number,
-        #     )[0, 0]
+        def scalar_mode_fun(rr, tt, zz, ll, mm, nn):
+            """Scalar basis function for one node and one mode."""
+            rp = sharp_zernike(
+                r=jnp.asarray([[rr]]),
+                t=jnp.asarray([[tt]]),
+                z=jnp.asarray([[zz]]),
+                l=jnp.asarray([ll]),
+                m=jnp.asarray([mm]),
+                dr=0,
+                dt=0,
+                dz=0,
+                m_b=self.m_b,
+                n_b=self.n_b,
+                β=self.β,
+                sharp_type=self.sharp_type,
+                number=self.number,
+            )[0, 0]
 
-        #     tor = fourier(
-        #         jnp.asarray([[zz]]),
-        #         jnp.asarray([nn]),
-        #         NFP=self.NFP,
-        #         dt=0,
-        #     )[0, 0]
+            tor = fourier(
+                jnp.asarray([[zz]]),
+                jnp.asarray([nn]),
+                NFP=self.NFP,
+                dt=0,
+            )[0, 0]
 
-        #     return rp * tor
+            return rp * tor
 
-        # def apply_derivs(fun, dr, dt, dz):
-        #     """Apply repeated partial derivatives to scalar-output function."""
-        #     g = fun
-        #     for _ in range(dr):
-        #         g = jax.grad(g, argnums=0)
-        #     for _ in range(dt):
-        #         g = jax.grad(g, argnums=1)
-        #     for _ in range(dz):
-        #         g = jax.grad(g, argnums=2)
-        #     return g
+        def apply_derivs(fun, dr, dt, dz):
+            """Apply repeated partial derivatives to scalar-output function."""
+            g = fun
+            for _ in range(dr):
+                g = jax.grad(g, argnums=0)
+            for _ in range(dt):
+                g = jax.grad(g, argnums=1)
+            for _ in range(dz):
+                g = jax.grad(g, argnums=2)
+            return g
 
-        # deriv_fun = apply_derivs(scalar_mode_fun, dr, dt, dz)
+        deriv_fun = apply_derivs(scalar_mode_fun, dr, dt, dz)
 
-        # def eval_one_mode(ll, mm, nn):
-        #     """Evaluate one differentiated mode on all nodes."""
-        #     return jax.vmap(
-        #         lambda rr, tt, zz: deriv_fun(rr, tt, zz, ll, mm, nn)
-        #     )(r, t, z)
+        def eval_one_mode(ll, mm, nn):
+            """Evaluate one differentiated mode on all nodes."""
+            return jax.vmap(
+                lambda rr, tt, zz: deriv_fun(rr, tt, zz, ll, mm, nn)
+            )(r, t, z)
 
-        # # shape: (num_modes, num_nodes)
-        # vals = jax.vmap(eval_one_mode)(l_all, m_all, n_all)
+        # shape: (num_modes, num_nodes)
+        vals = jax.vmap(eval_one_mode)(l_all, m_all, n_all)
 
-        # # return shape: (num_nodes, num_modes)
-        # return vals.T
+        # return shape: (num_nodes, num_modes)
+        return vals.T
     
     def __eq__(self, other):
         """Check if two basis objects are equal."""
