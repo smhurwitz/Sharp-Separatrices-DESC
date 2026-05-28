@@ -2083,6 +2083,8 @@ class SharpFourierZernikeBasis(_Basis):
             nidx = noutidx = np.arange(len(modes))
         if not len(modes):
             return np.array([]).reshape((grid.num_nodes, 0))
+        
+        ###
 
         r, t, z = grid.nodes.T
         _, m, n = modes.T
@@ -2095,46 +2097,80 @@ class SharpFourierZernikeBasis(_Basis):
         dr = derivatives[0]
         dt = derivatives[1]
         dz = derivatives[2]
-        
-        def f(r, t, z):
-            """Undifferentiated output function. """
-            r = jnp.atleast_1d(r)
-            t = jnp.atleast_1d(t)
-            z = jnp.atleast_1d(z)
-            rp = sharp_zernike(
-                r=r[:, np.newaxis],
-                t=t[:, np.newaxis],
-                z=z[:, np.newaxis],
-                l=lm[:, 0],
-                m=lm[:, 1],
-                dr=0,
-                dt=0,
-                dz=0,
-                m_b=self.m_b,
-                n_b=self.n_b,
-                β=self.β,
-                sharp_type=self.sharp_type,
-                number=self.number,
-            )
-            toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=0)
+        if dr != 0 or dt != 0 or dz != 0:
+            raise NotImplementedError("Not yet implemented.")
 
-            rp = rp[:, lmoutidx]
-            toroidal = toroidal[:, noutidx]
+        rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
+        toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
 
-            return rp * toroidal
+        rp = rp[:, lmoutidx]
+        toroidal = toroidal[:, noutidx]
 
-        def f_der(f, dr, dt, dz):
-            """Compute derivatives of f with JAX to order specified."""
-            g = f
-            for _ in range(dr):
-                g = Derivative(g, argnum=0, mode="rev")
-            for _ in range(dt):
-                g = Derivative(g, argnum=1, mode="rev")
-            for _ in range(dz):
-                g = Derivative(g, argnum=2, mode="rev")
-            return g
+        return rp * toroidal
 
-        return f_der(f, dr, dt, dz)(r, t, z)
+        ###
+
+        # r, t, z = map(jnp.asarray, grid.nodes.T)
+
+        # # requested derivative orders
+        # dr = int(derivatives[0])
+        # dt = int(derivatives[1])
+        # dz = int(derivatives[2])
+
+        # # mode arrays
+        # l_all, m_all, n_all = map(jnp.asarray, modes.T)
+
+        # def scalar_mode_fun(rr, tt, zz, ll, mm, nn):
+        #     """Scalar basis function for one node and one mode."""
+        #     rp = sharp_zernike(
+        #         r=jnp.asarray([[rr]]),
+        #         t=jnp.asarray([[tt]]),
+        #         z=jnp.asarray([[zz]]),
+        #         l=jnp.asarray([ll]),
+        #         m=jnp.asarray([mm]),
+        #         dr=0,
+        #         dt=0,
+        #         dz=0,
+        #         m_b=self.m_b,
+        #         n_b=self.n_b,
+        #         β=self.β,
+        #         sharp_type=self.sharp_type,
+        #         number=self.number,
+        #     )[0, 0]
+
+        #     tor = fourier(
+        #         jnp.asarray([[zz]]),
+        #         jnp.asarray([nn]),
+        #         NFP=self.NFP,
+        #         dt=0,
+        #     )[0, 0]
+
+        #     return rp * tor
+
+        # def apply_derivs(fun, dr, dt, dz):
+        #     """Apply repeated partial derivatives to scalar-output function."""
+        #     g = fun
+        #     for _ in range(dr):
+        #         g = jax.grad(g, argnums=0)
+        #     for _ in range(dt):
+        #         g = jax.grad(g, argnums=1)
+        #     for _ in range(dz):
+        #         g = jax.grad(g, argnums=2)
+        #     return g
+
+        # deriv_fun = apply_derivs(scalar_mode_fun, dr, dt, dz)
+
+        # def eval_one_mode(ll, mm, nn):
+        #     """Evaluate one differentiated mode on all nodes."""
+        #     return jax.vmap(
+        #         lambda rr, tt, zz: deriv_fun(rr, tt, zz, ll, mm, nn)
+        #     )(r, t, z)
+
+        # # shape: (num_modes, num_nodes)
+        # vals = jax.vmap(eval_one_mode)(l_all, m_all, n_all)
+
+        # # return shape: (num_nodes, num_modes)
+        # return vals.T
     
     def __eq__(self, other):
         """Check if two basis objects are equal."""
@@ -2851,13 +2887,14 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=True):
 
     z = ρ * jnp.exp(1j * α)
     z = jnp.asarray(z)
-
-    L2 = lens_map_2D(z ** (m_b / 2.0), β)
+    
+    L2 = lens_map_2D(jnp.asarray(ρ ** (m_b / 2.0) * jnp.exp(1j * α * m_b / 2)), β)
     L2 = jnp.atleast_1d(L2)
     rad = jnp.abs(L2)
-    arg = jnp.unwrap(2 * jnp.angle(L2), axis=0) / 2 # the 2's are for jnp.unwrap to work
+    angle = jnp.angle(L2)
+
+    arg = angle + 2 * π * jnp.round((m_b * α / 2 - angle)/(2 * π))
     LM = rad ** (2.0 / m_b) * jnp.exp(2j * arg / m_b)
-    # jax.debug.print("rad: {rad}, arg: {arg}, LM: {LM}", rad=rad, arg=jnp.angle(L2), LM=LM)
     return LM
 
 
