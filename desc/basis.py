@@ -2111,7 +2111,8 @@ class SharpFourierZernikeBasis(_Basis):
         ###
 
         r, t, z = map(jnp.asarray, grid.nodes.T)
-        r = r - r * 1e-12 # to avoid nans evaluating right at boundary
+        ε = 1e-12 # to avoid nans evaluating right at boundaries
+        r = r - 2 * r * ε + ε
 
         # requested derivative orders
         dr = int(derivatives[0])
@@ -2171,6 +2172,9 @@ class SharpFourierZernikeBasis(_Basis):
         vals = jax.vmap(eval_one_mode)(l_all, m_all, n_all)
 
         # return shape: (num_nodes, num_modes)
+
+        # print(vals)
+
         return vals.T
     
     def __eq__(self, other):
