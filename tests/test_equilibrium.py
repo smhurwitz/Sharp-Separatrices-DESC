@@ -498,7 +498,7 @@ def test_eq_optimize_default_constraints_warning(DummyStellarator):
 @pytest.mark.unit
 def test_sharp_equilibrium_init_no_volume():
     """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
-    eq = SharpEquilibrium(ensure_nested=False, check_orientation=True)
+    eq = SharpEquilibrium(ensure_nested=True, check_orientation=True)
     assert eq.R_lmn.shape == (eq.R_basis.num_modes,)
     assert eq.Z_lmn.shape == (eq.Z_basis.num_modes,)
     assert eq.L_lmn.shape == (eq.L_basis.num_modes,)
@@ -507,7 +507,7 @@ def test_sharp_equilibrium_init_no_volume():
 def test_sharp_equilibrium_init_default_volume():
     """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
     vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4, m_b=5, n_b=5, NFP=5)
-    eq = SharpEquilibrium(volume=vol, ensure_nested=False, check_orientation=True)
+    eq = SharpEquilibrium(volume=vol, ensure_nested=True, check_orientation=True)
 
     expected_axis = vol.get_axis()
     assert eq.volume is vol
@@ -529,7 +529,7 @@ def test_sharp_equilibrium_init_default_volume():
 def test_sharp_equilibrium_init_default_volume_hypergeometric():
     """Test SharpEquilibrium initializes from a VolumeRegion and auto-computes axis."""
     vol = GeneralizedFourierZernikeRZToroidalVolume(L=4, M=4, N=4, L_shp=2, M_shp=2, N_shp=4, m_b=5, n_b=5, NFP=5, sharp_type='hypergeometric')
-    eq = SharpEquilibrium(volume=vol, ensure_nested=False, check_orientation=True)
+    eq = SharpEquilibrium(volume=vol, ensure_nested=True, check_orientation=True)
 
     expected_axis = vol.get_axis()
     assert eq.volume is vol
@@ -561,8 +561,8 @@ def test_sharp_equilibrium_init_propagates_resolution():
         L_shp=4,
         M_shp=4,
         N_shp=2,
-        ensure_nested=False,
-        check_orientation=False,
+        ensure_nested=True,
+        check_orientation=True,
     )
 
     assert eq.volume.L == 4
