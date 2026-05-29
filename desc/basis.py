@@ -2083,32 +2083,6 @@ class SharpFourierZernikeBasis(_Basis):
             nidx = noutidx = np.arange(len(modes))
         if not len(modes):
             return np.array([]).reshape((grid.num_nodes, 0))
-        
-        ###
-
-        # r, t, z = grid.nodes.T
-        # _, m, n = modes.T
-        # lm = modes[:, :2]
-
-        # lm = lm[lmidx]
-        # m = m[midx]
-        # n = n[nidx]
-
-        # dr = derivatives[0]
-        # dt = derivatives[1]
-        # dz = derivatives[2]
-        # if dr != 0 or dt != 0 or dz != 0:
-        #     raise NotImplementedError("Not yet implemented.")
-
-        # rp = sharp_zernike(r[:, np.newaxis], t[:, np.newaxis], z[:, np.newaxis], lm[:, 0], lm[:, 1], dr, dt, dz, self.m_b, self.n_b, self.β, self.sharp_type, self.number)
-        # toroidal = fourier(z[:, np.newaxis], n, NFP=self.NFP, dt=derivatives[2])
-
-        # rp = rp[:, lmoutidx]
-        # toroidal = toroidal[:, noutidx]
-
-        # return rp * toroidal
-
-        ###
 
         r, t, z = map(jnp.asarray, grid.nodes.T)
         ε = 1e-12 # to avoid nans evaluating right at boundaries
@@ -2170,10 +2144,6 @@ class SharpFourierZernikeBasis(_Basis):
 
         # shape: (num_modes, num_nodes)
         vals = jax.vmap(eval_one_mode)(l_all, m_all, n_all)
-
-        # return shape: (num_nodes, num_modes)
-
-        # print(vals)
 
         return vals.T
     
