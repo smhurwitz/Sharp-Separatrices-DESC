@@ -2895,14 +2895,14 @@ class SharpEquilibrium(Equilibrium):
         total toroidal flux (in Webers) within LCFS. Default 1.0
     NFP : int (optional)
         number of field periods Default ``volume.NFP`` or 1
-    L_std : int (optional)
-        Radial resolution of standard basis. Default 2*M_std for ``spectral_indexing=='fringe'``, else M_std
-    M_std : int (optional)
-        Poloidal resolution of standard basis. Default volume.M_std or 1
-    N_std : int (optional)
-        Toroidal resolution of standard basis. Default volume.N_std or 0
+    L : int (optional)
+        Radial resolution of standard basis. Default 2*M for ``spectral_indexing=='fringe'``, else M
+    M : int (optional)
+        Poloidal resolution of standard basis. Default volume.M or 1
+    N : int (optional)
+        Toroidal resolution of standard basis. Default volume.N or 0
     L_shp : int (optional)
-        Radial resolution of sharp basis. Default 2*M_shp for ``spectral_indexing=='fringe'``, else M_std
+        Radial resolution of sharp basis. Default 2*M_shp for ``spectral_indexing=='fringe'``, else M
     M_shp : int (optional)
         Poloidal resolution of sharp basis. Default volume.M_shp or 1
     N_shp : int (optional)
@@ -2915,6 +2915,10 @@ class SharpEquilibrium(Equilibrium):
         Angle of corners for lens mapping method.
     sharp_type : str (optional)
         Method for sharp mapping, either "lens" or "hypergeometric".
+    fix_quadrature : bool (optional)
+        If `True`, attempts to space quadrature points more evenly than the
+        original sharp mapping (see ``desc.basis.sharp_map``). Default ``volume.fix_quadrature``
+        or `False`.
     L_grid : int (optional)
         resolution of real space nodes in radial direction
     M_grid : int (optional)
@@ -2969,9 +2973,9 @@ class SharpEquilibrium(Equilibrium):
         "_Z_sym",
         "_Psi",
         "_NFP",
-        "_L_std",
-        "_M_std",
-        "_N_std",
+        "_L",
+        "_M",
+        "_N",
         "_L_shp",
         "_M_shp",
         "_N_shp",
@@ -2982,6 +2986,7 @@ class SharpEquilibrium(Equilibrium):
         "n_b",
         "β",
         "sharp_type",
+        "fix_quadrature",
         "_R_basis",
         "_Z_basis",
         "_L_basis",
@@ -3005,9 +3010,9 @@ class SharpEquilibrium(Equilibrium):
         "_R_sym",
         "_Z_sym",
         "_NFP",
-        "_L_std",
-        "_M_std",
-        "_N_std",
+        "_L",
+        "_M",
+        "_N",
         "_L_shp",
         "_M_shp",
         "_N_shp",
@@ -3015,6 +3020,7 @@ class SharpEquilibrium(Equilibrium):
         "n_b",
         "β",
         "sharp_type",
+        "fix_quadrature",
         "_L_grid",
         "_M_grid",
         "_N_grid",
@@ -3040,6 +3046,7 @@ class SharpEquilibrium(Equilibrium):
         n_b=None,
         β=0.75*np.pi,
         sharp_type="lens",
+        fix_quadrature=None,
         L_grid=None,
         M_grid=None,
         N_grid=None,
@@ -3167,6 +3174,9 @@ class SharpEquilibrium(Equilibrium):
         self._n_b = int(setdefault(n_b, self._volume.n_b))
         self._β = β
         self._sharp_type = sharp_type
+        self._fix_quadrature = bool(
+            setdefault(fix_quadrature, getattr(self._volume, "fix_quadrature", False))
+        )
 
         L_shp = check_nonnegint(L_shp, "L_shp")
         M_shp = check_nonnegint(M_shp, "M_shp")
@@ -3195,6 +3205,7 @@ class SharpEquilibrium(Equilibrium):
             sharp_type=self.sharp_type,
             sym=self._R_sym,
             spectral_indexing=self.spectral_indexing,
+            fix_quadrature=self.fix_quadrature,
         )
         self._R_basis = GeneralizedFourierZernikeBasis(R_basis_std, R_basis_shp)
 
@@ -3217,6 +3228,7 @@ class SharpEquilibrium(Equilibrium):
             sharp_type=self.sharp_type,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
+            fix_quadrature=self.fix_quadrature,
         )
         self._Z_basis = GeneralizedFourierZernikeBasis(Z_basis_std, Z_basis_shp)
 
@@ -3239,6 +3251,7 @@ class SharpEquilibrium(Equilibrium):
             sharp_type=self.sharp_type,
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
+            fix_quadrature=self.fix_quadrature,
         )
         self._L_basis = GeneralizedFourierZernikeBasis(L_basis_std, L_basis_shp)
 
@@ -3389,7 +3402,152 @@ class SharpEquilibrium(Equilibrium):
         """
         set_initial_guess_sharp(self, *args, ensure_nested=ensure_nested)
 
+    def copy(self, deepcopy=True):
+        """Return a (deep)copy of this equilibrium."""
+        if deepcopy:
+            new = copy.deepcopy(self)
+        else:
+            new = copy.copy(self)
+        return new
+    
+    @execute_on_cpu
+    def change_resolution(
+        self,
+        L=None,
+        M=None,
+        N=None,
+        L_shp=None,
+        M_shp=None,
+        N_shp=None,
+        L_grid=None,
+        M_grid=None,
+        N_grid=None,
+        NFP=None,
+        sym=None,
+    ):
+        """Set the spectral resolution and real space grid resolution.
 
+        Parameters
+        ----------
+        L : int
+            Maximum radial Zernike mode number.
+        M : int
+            Maximum poloidal Fourier mode number.
+        N : int
+            Maximum toroidal Fourier mode number.
+        L_shp : int
+            Maximum radial Zernike mode number for sharp basis.
+        M_shp : int
+            Maximum poloidal Fourier mode number for sharp basis.
+        N_shp : int
+            Maximum toroidal Fourier mode number for sharp basis.
+        L_grid : int
+            Radial real space grid resolution.
+        M_grid : int
+            Poloidal real space grid resolution.
+        N_grid : int
+            Toroidal real space grid resolution.
+        NFP : int
+            Number of field periods.
+        sym : bool
+            Whether to enforce stellarator symmetry.
+
+        """
+        warnif(
+            L is not None and L < self.L,
+            UserWarning,
+            "Reducing radial (L) resolution can make plasma boundary inconsistent. "
+            + "Recommend calling `eq.surface = eq.get_surface_at(rho=1.0)`",
+        )
+
+        self._L = int(setdefault(L, self.L))
+        self._M = int(setdefault(M, self.M))
+        self._N = int(setdefault(N, self.N))
+        self._L_shp = int(setdefault(L_shp, self.L_shp))
+        self._M_shp = int(setdefault(M_shp, self.M_shp))
+        self._N_shp = int(setdefault(N_shp, self.N_shp))
+        self._L_grid = int(setdefault(L_grid, self.L_grid))
+        self._M_grid = int(setdefault(M_grid, self.M_grid))
+        self._N_grid = int(setdefault(N_grid, self.N_grid))
+        self._NFP = int(setdefault(NFP, self.NFP))
+        self._sym = bool(setdefault(sym, self.sym))
+
+        assert self.N == self.N_shp, "N and N_shp must be equal"
+
+        old_modes_R = self.R_basis.modes
+        old_modes_Z = self.Z_basis.modes
+        old_modes_L = self.L_basis.modes
+
+        self.R_basis.change_resolution(
+            self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp, NFP=self.NFP, sym="cos" if self.sym else self.sym
+        )
+        self.Z_basis.change_resolution(
+            self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp, NFP=self.NFP, sym="sin" if self.sym else self.sym
+        )
+        self.L_basis.change_resolution(
+            self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp, NFP=self.NFP, sym="sin" if self.sym else self.sym
+        )
+
+        for profile in [
+            "pressure",
+            "iota",
+            "current",
+            "electron_temperature",
+            "electron_density",
+            "ion_temperature",
+            "atomic_number",
+            "anisotropy",
+        ]:
+            p = getattr(self, profile)
+            if hasattr(p, "change_resolution"):
+                p.change_resolution(max(p.basis.L, self.L))
+
+        self.surface.change_resolution(
+            self.L, self.M, self.N, NFP=self.NFP, sym=self.sym
+        )
+        self.axis.change_resolution(self.N, NFP=self.NFP, sym=self.sym)
+
+        self._R_lmn = copy_coeffs(self.R_lmn, old_modes_R, self.R_basis.modes)
+        self._Z_lmn = copy_coeffs(self.Z_lmn, old_modes_Z, self.Z_basis.modes)
+        self._L_lmn = copy_coeffs(self.L_lmn, old_modes_L, self.L_basis.modes)
+
+    def get_profile(self, name, grid=None, kind="spline", **kwargs):
+        """Return a SplineProfile of the desired quantity.
+
+        Parameters
+        ----------
+        name : str
+            Name of the quantity to compute.
+            If list is given, then two names are expected: the quantity to spline
+            and its radial derivative.
+        grid : Grid, optional
+            Grid of coordinates to evaluate at. Defaults to the quadrature grid.
+            Note profile will only be a function of the radial coordinate.
+        kind : {"power_series", "spline", "fourier_zernike"}
+            Type of returned profile.
+
+        Returns
+        -------
+        profile : SplineProfile
+            Radial profile of the desired quantity.
+
+        """
+        assert kind in {"power_series", "spline", "fourier_zernike"}
+        if grid is None:
+            grid = QuadratureGrid(self.L_grid, self.M_grid, self.N_grid, self.NFP)
+        data = self.compute(name, grid=grid, **kwargs)
+        knots = grid.compress(grid.nodes[:, 0])
+        if isinstance(name, str):
+            f = grid.compress(data[name])
+            p = SplineProfile(f, knots, name=name)
+        else:
+            f, df = map(grid.compress, (data[name[0]], data[name[1]]))
+            p = HermiteSplineProfile(f, df, knots, name=name)
+        if kind == "power_series":
+            p = p.to_powerseries(order=min(self.L, grid.num_rho), xs=knots, sym=True)
+        if kind == "fourier_zernike":
+            p = p.to_fourierzernike(L=min(self.L, grid.num_rho), xs=knots)
+        return p
     
     def compute(  # noqa: C901
         self,
@@ -3794,6 +3952,74 @@ class SharpEquilibrium(Equilibrium):
         )
         return data
 
+    def _set_up(self):
+        """Set unset attributes after loading.
+
+        To ensure object has all properties needed for current DESC version.
+        Allows for backwards-compatibility with equilibria saved/ran with older
+        DESC versions.
+        """
+        for attribute in self._io_attrs_:
+            if not hasattr(self, attribute):
+                setattr(self, attribute, None)
+
+        if self.current is not None and hasattr(self.current, "_get_transform"):
+            # Need to rebuild derivative matrices to get higher order derivatives
+            # on equilibrium's saved before GitHub pull request #586.
+            self.current._transform = self.current._get_transform(self.current.grid)
+
+        # ensure things that should be ints are ints
+        self._L = int(self._L)
+        self._M = int(self._M)
+        self._N = int(self._N)
+        self._L_shp = int(self._L_shp)
+        self._M_shp = int(self._M_shp)
+        self._N_shp = int(self._N_shp)
+        self._NFP = int(self._NFP)
+        self._L_grid = int(self._L_grid)
+        self._M_grid = int(self._M_grid)
+        self._N_grid = int(self._N_grid)
+
+    def _sort_args(self, args):
+        """Put arguments in a canonical order. Returns unique sorted elements.
+
+        For Equilibrium, alphabetical order seems to lead to some numerical instability
+        so we enforce a particular order that has worked well.
+        """
+        arg_order = (
+            "R_lmn",
+            "Z_lmn",
+            "L_lmn",
+            "p_l",
+            "i_l",
+            "c_l",
+            "Psi",
+            "Te_l",
+            "ne_l",
+            "Ti_l",
+            "Zeff_l",
+            "a_lmn",
+            "Ra_n",
+            "Za_n",
+            "Rb_lmn",
+            "Zb_lmn",
+            "I",
+            "G",
+            "Phi_mn",
+        )
+        assert sorted(args) == sorted(arg_order)
+        return [arg for arg in arg_order if arg in args]
+    
+    def __repr__(self):
+        """String form of the object."""
+        return (
+            type(self).__name__
+            + " at "
+            + str(hex(id(self)))
+            + " (L={}, M={}, N={}, L_shp={}, M_shp={}, N_shp={}, NFP={}, m_b={}, n_b={}, sym={}, spectral_indexing={})".format(
+                self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp, self.NFP, self.m_b, self.n_b, self.sym, self.spectral_indexing
+            )
+        )
 
     @property
     def volume(self):
@@ -3907,6 +4133,12 @@ class SharpEquilibrium(Equilibrium):
         """str: Method for sharp mapping, either "lens" or "hypergeometric"."""
         return self._sharp_type
 
+    @property
+    def fix_quadrature(self):
+        """bool: whether to space quadrature points more evenly (see
+        `desc.basis.sharp_map`)."""
+        return self._fix_quadrature
+
     @optimizable_parameter
     @property
     def R_lmn(self):
@@ -3962,7 +4194,7 @@ class SharpEquilibrium(Equilibrium):
     @property
     def Rb_lmn(self):
         """ndarray: Spectral coefficients of R of the VolumeRegion boundary."""
-        return self.surface.R_lmn
+        return self.volume.R_lmn
 
     @Rb_lmn.setter
     def Rb_lmn(self, Rb_lmn):

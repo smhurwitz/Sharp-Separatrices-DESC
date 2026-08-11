@@ -1765,6 +1765,12 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
     def std_basis(self):
         """The `FourierZernikeBasis` component of the generalized basis."""
         return self._std_basis
+
+    @property
+    def fix_quadrature(self):
+        """bool: whether the sharp basis component spaces quadrature points more
+        evenly (see `sharp_map`)."""
+        return self.shp_basis.fix_quadrature
     
     @property
     def sym(self):
@@ -1881,11 +1887,14 @@ class SharpFourierZernikeBasis(_Basis):
         the traditional fringe/U of Arizona indexing is recovered.
         For L > 2*M, adds chevrons to the bottom, making a hexagonal diamond.
     number : int
-        Method number for writing the basis functions, see section I of 
+        Method number for writing the basis functions, see section I of
         "notebook.ipynb" for details. These are 0 (the standard Fourier-Zernike
-        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map 
-        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the 
-        standard map). The default is 4, which gives the best convergence. 
+        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map
+        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the
+        standard map). The default is 4, which gives the best convergence.
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the
+        original sharp mapping (see `sharp_map`). Default is `False`.
 
     """
 
@@ -1901,9 +1910,10 @@ class SharpFourierZernikeBasis(_Basis):
                  n_b=1, 
                  β=0.75*np.pi, 
                  sharp_type="lens",
-                 sym=False, 
+                 sym=False,
                  spectral_indexing="ansi",
-                 number=4):
+                 number=4,
+                 fix_quadrature=False):
         self._L = check_nonnegint(L, "L", False)
         self._M = check_nonnegint(M, "M", False)
         self._N = check_nonnegint(N, "N", False)
@@ -1921,6 +1931,7 @@ class SharpFourierZernikeBasis(_Basis):
         self._spectral_indexing = str(spectral_indexing)
         self._number = check_nonnegint(number, "number", False)
         assert self._number in [0, 1, 4, 6], "Unknown method number: {}".format(number)
+        self._fix_quadrature = bool(fix_quadrature)
         self._modes = self._get_modes(
             L=self.L, M=self.M, N=self.N, spectral_indexing=self.spectral_indexing
         )
@@ -2112,6 +2123,7 @@ class SharpFourierZernikeBasis(_Basis):
                 β=self.β,
                 sharp_type=self.sharp_type,
                 number=self.number,
+                fix_quadrature=self.fix_quadrature,
             )[0, 0]
 
             tor = fourier(
@@ -2158,6 +2170,7 @@ class SharpFourierZernikeBasis(_Basis):
             and self.β == other.β
             and self.sharp_type == other.sharp_type
             and self.number == other.number
+            and self.fix_quadrature == other.fix_quadrature
             and super().__eq__(other)
         )
     
@@ -2189,6 +2202,11 @@ class SharpFourierZernikeBasis(_Basis):
     def sharp_type(self):
         """str: Method for sharp mapping, either "lens" or "hypergeometric"."""
         return self._sharp_type
+
+    @property
+    def fix_quadrature(self):
+        """bool: whether to space quadrature points more evenly (see `sharp_map`)."""
+        return self._fix_quadrature
 
 
 def polyder_vec(p, m, exact=False):
@@ -2742,7 +2760,7 @@ def _jacobi_jvp(dx, x, xdot):
 
 
 @functools.partial(jit, static_argnums=[3,4,5,6,7])
-def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=True):
+def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False):
     """
     Perform the sharp mapping from unit disc to the desired shape.
     
@@ -2782,7 +2800,7 @@ def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=True):
 
 
 @functools.partial(jit, static_argnums=[2, 3])
-def hyp2f1_map(ρ, α, m_b, fix_quadrature=True):
+def hyp2f1_map(ρ, α, m_b, fix_quadrature=False):
     """
     Performs mapping from unit disc to regular m_b-gon.
 
@@ -2825,7 +2843,7 @@ def hyp2f1_map(ρ, α, m_b, fix_quadrature=True):
 
     
 @functools.partial(jit, static_argnums=[2, 3, 4])
-def lens_map(ρ, α, m_b, β, fix_quadrature=True):
+def lens_map(ρ, α, m_b, β, fix_quadrature=False):
     """
     Performs mapping from unit disc to an m_b-lens.
 
@@ -2854,8 +2872,18 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=True):
     π = jnp.pi
 
     def lens_map_2D(z, β):
-        zt = ((1+z)**(β/π)-(1-z)**(β/π))/((1+z)**(β/π)+(1-z)**(β/π))
-        return zt
+        rho = jnp.abs(z)
+        theta = jnp.angle(z)
+        rho = rho + 1e-6*(rho == 0) - 1e-6*(rho == 1) # has to be smaller than theta
+        rho = 1-(1-rho)**(π/β)
+        theta = theta + 1e-12*(theta == 0) - 1e-12*(theta == π)
+        theta = (π * jnp.floor(theta/π) + π*(theta-π*jnp.floor(theta/π))**(π/β) / 
+                ((theta-π*jnp.floor(theta/π))**(π/β) + (π*(jnp.floor(theta/π)+1)-theta)**(π/β)))
+        z = rho * jnp.exp(1j * theta)
+        power = β / jnp.pi
+        numerator = (1.0 + z) ** power - (1.0 - z) ** power
+        denominator = (1.0 + z) ** power + (1.0 - z) ** power
+        return numerator / denominator
     
     if fix_quadrature:
         α = α * 1.0 - min(1, 2*(0.99-(β/π)))* ρ**m_b * (jnp.sin(m_b * α)  / m_b)
@@ -2873,8 +2901,8 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=True):
     return LM
 
 
-@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12])
-def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4):
+@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13])
+def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4, fix_quadrature=False):
     """Evaluate the sharp Zernike polynomial for given mode numbers at given nodes.
 
     Parameters
@@ -2904,11 +2932,14 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
     sharp_type : str
         Method for sharp mapping, either "lens" or "hypergeometric".
     number : int
-        Method number for writing the basis functions, see section I of 
+        Method number for writing the basis functions, see section I of
         "notebook.ipynb" for details. These are 0 (the standard Fourier-Zernike
-        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map 
-        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the 
+        basis), 1 (a sharp multiplicative factor), 4 (placing the toroid map
+        within the Zernike), and 6 (adding the toroid mapping for l=-1 to the
         standard map). The default is 4, which gives the best convergence.
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the
+        original sharp mapping (see `sharp_map`).
 
     Returns
     -------
@@ -2926,16 +2957,16 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
         return zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
     elif number == 1:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
         return jnp.abs(z_tilde) * std_val
     elif number == 4:
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
         r_tilde = jnp.abs(z_tilde)
         t_tilde = jnp.angle(z_tilde)
         return zernike_radial(r_tilde, l, m, dr=0) * fourier(t_tilde, m, dt=0)
     elif number == 6:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
 
         sharp_val = jnp.where(
             m == -1,

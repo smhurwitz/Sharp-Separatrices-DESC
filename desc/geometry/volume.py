@@ -345,6 +345,9 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         Angle of corners for lens mapping method.
     sharp_type : str
         Method for sharp mapping, either "lens" or "hypergeometric".
+    fix_quadrature : bool
+        If `True`, attempts to space quadrature points more evenly than the
+        original sharp mapping (see `desc.basis.sharp_map`). Default is `False`.
     sym : bool
         whether to enforce stellarator symmetry. Default is "auto" which enforces if
         modes are symmetric. If True, non-symmetric modes will be truncated.
@@ -357,7 +360,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         ensure that this volume has a right handed orientation. Do not set to False
         unless you are sure the parameterization you have given is right handed
         (ie, e_theta x e_zeta points outward from the volume).
-    
+
     """
 
     _io_attrs_ = Volume._io_attrs_ + [
@@ -379,6 +382,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         n_b=1,
         β=0.5*np.pi,
         sharp_type="lens",
+        fix_quadrature=False,
         sym="auto",
         L=None,
         M=None,
@@ -452,6 +456,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         self._NFP = NFP
         self._m_b = m_b
         self._n_b = n_b
+        self._fix_quadrature = bool(fix_quadrature)
 
         if sym == "auto":
             if np.all(
@@ -467,13 +472,13 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="cos" if sym else False
         )
         R_basis_sharp = SharpFourierZernikeBasis(
-            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False, fix_quadrature=self._fix_quadrature
         )
         Z_basis_std = FourierZernikeBasis(
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="sin" if sym else False
         )
         Z_basis_sharp = SharpFourierZernikeBasis(
-            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False, fix_quadrature=self._fix_quadrature
         )
 
         self._R_basis = GeneralizedFourierZernikeBasis(
@@ -513,6 +518,12 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     def n_b(self):
         """Toroidal mode number associated with the boundary of the volume."""
         return self._n_b
+
+    @property
+    def fix_quadrature(self):
+        """bool: whether to space quadrature points more evenly (see
+        `desc.basis.sharp_map`)."""
+        return self._fix_quadrature
 
     @property
     def R_basis(self):
