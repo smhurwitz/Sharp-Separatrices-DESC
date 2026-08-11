@@ -2872,19 +2872,9 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=False):
     π = jnp.pi
 
     def lens_map_2D(z, β):
-        rho = jnp.abs(z)
-        theta = jnp.angle(z)
-        rho = rho + 1e-6*(rho == 0) - 1e-6*(rho == 1) # has to be smaller than theta
-        rho = 1-(1-rho)**(π/β)
-        theta = theta + 1e-12*(theta == 0) - 1e-12*(theta == π)
-        theta = (π * jnp.floor(theta/π) + π*(theta-π*jnp.floor(theta/π))**(π/β) / 
-                ((theta-π*jnp.floor(theta/π))**(π/β) + (π*(jnp.floor(theta/π)+1)-theta)**(π/β)))
-        z = rho * jnp.exp(1j * theta)
-        power = β / jnp.pi
-        numerator = (1.0 + z) ** power - (1.0 - z) ** power
-        denominator = (1.0 + z) ** power + (1.0 - z) ** power
-        return numerator / denominator
-    
+        zt = ((1+z)**(β/π)-(1-z)**(β/π))/((1+z)**(β/π)+(1-z)**(β/π))
+        return zt
+
     if fix_quadrature:
         α = α * 1.0 - min(1, 2*(0.99-(β/π)))* ρ**m_b * (jnp.sin(m_b * α)  / m_b)
 
