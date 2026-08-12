@@ -575,3 +575,45 @@ def test_sharp_equilibrium_init_propagates_resolution():
     assert eq.L == 4
     assert eq.M == 4
     assert eq.N == 2
+
+@pytest.mark.unit
+def test_sharp_equilibrium_quasiconformal_flag():
+    """SharpEquilibrium defaults to the original lens map and honours the flag."""
+    eq = SharpEquilibrium(ensure_nested=False, check_orientation=True)
+    assert eq.quasiconformal is False
+    assert eq.R_basis.quasiconformal is False
+    assert eq.Z_basis.quasiconformal is False
+    assert eq.L_basis.quasiconformal is False
+
+    eq = SharpEquilibrium(
+        quasiconformal=True, ensure_nested=False, check_orientation=True
+    )
+    assert eq.quasiconformal is True
+    assert eq.R_basis.quasiconformal is True
+    assert eq.Z_basis.quasiconformal is True
+    assert eq.L_basis.quasiconformal is True
+
+
+@pytest.mark.unit
+def test_sharp_equilibrium_quasiconformal_inherits_from_volume():
+    """The flag is inherited from the volume unless explicitly overridden."""
+    vol = GeneralizedFourierZernikeRZToroidalVolume(quasiconformal=True)
+    eq = SharpEquilibrium(volume=vol, ensure_nested=False)
+    assert eq.quasiconformal is True
+
+    eq = SharpEquilibrium(volume=vol, quasiconformal=False, ensure_nested=False)
+    assert eq.quasiconformal is False
+
+    vol = GeneralizedFourierZernikeRZToroidalVolume()
+    eq = SharpEquilibrium(volume=vol, ensure_nested=False)
+    assert eq.quasiconformal is False
+
+
+@pytest.mark.unit
+def test_sharp_equilibrium_quasiconformal_hypergeometric_guard():
+    """quasiconformal=True is rejected for the hypergeometric map."""
+    with pytest.raises(ValueError):
+        SharpEquilibrium(
+            m_b=3, n_b=3, sharp_type="hypergeometric", quasiconformal=True,
+            ensure_nested=False,
+        )

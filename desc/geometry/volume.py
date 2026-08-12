@@ -348,6 +348,10 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     fix_quadrature : bool
         If `True`, attempts to space quadrature points more evenly than the
         original sharp mapping (see `desc.basis.sharp_map`). Default is `False`.
+    quasiconformal : bool
+        If `True`, use the quasiconformal variant of the lens map, which has the
+        same image but a bounded Jacobian (see `desc.basis.lens_map`). Only valid
+        for ``sharp_type="lens"``. Default is `False`, the original map.
     sym : bool
         whether to enforce stellarator symmetry. Default is "auto" which enforces if
         modes are symmetric. If True, non-symmetric modes will be truncated.
@@ -383,6 +387,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         β=0.5*np.pi,
         sharp_type="lens",
         fix_quadrature=False,
+        quasiconformal=False,
         sym="auto",
         L=None,
         M=None,
@@ -457,6 +462,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         self._m_b = m_b
         self._n_b = n_b
         self._fix_quadrature = bool(fix_quadrature)
+        self._quasiconformal = bool(quasiconformal)
 
         if sym == "auto":
             if np.all(
@@ -472,13 +478,13 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="cos" if sym else False
         )
         R_basis_sharp = SharpFourierZernikeBasis(
-            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False, fix_quadrature=self._fix_quadrature
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="cos" if sym else False, fix_quadrature=self._fix_quadrature, quasiconformal=self._quasiconformal
         )
         Z_basis_std = FourierZernikeBasis(
             L=self._L, M=self._M, N=self._N, NFP=NFP, sym="sin" if sym else False
         )
         Z_basis_sharp = SharpFourierZernikeBasis(
-            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False, fix_quadrature=self._fix_quadrature
+            L=self._L_shp, M=self._M_shp, N=self._N_shp, NFP=NFP, m_b=m_b, n_b=n_b, β=β, sharp_type=sharp_type, sym="sin" if sym else False, fix_quadrature=self._fix_quadrature, quasiconformal=self._quasiconformal
         )
 
         self._R_basis = GeneralizedFourierZernikeBasis(
@@ -524,6 +530,13 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         """bool: whether to space quadrature points more evenly (see
         `desc.basis.sharp_map`)."""
         return self._fix_quadrature
+
+    @property
+    def quasiconformal(self):
+        """bool: whether to use the quasiconformal lens map (see
+        `desc.basis.lens_map`)."""
+        # getattr for backwards compatibility with objects saved before this flag
+        return getattr(self, "_quasiconformal", False)
 
     @property
     def R_basis(self):

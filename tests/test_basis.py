@@ -740,3 +740,150 @@ class TestGeneralizedFourierZernikeBasis:
         shrp_basis = SharpFourierZernikeBasis(L=1, M=2, N=1, spectral_indexing="fringe")
         with pytest.raises(AssertionError, match="std_basis and shrp_basis must have the same spectral_indexing"):
             GeneralizedFourierZernikeBasis(std_basis, shrp_basis)
+
+
+class TestQuasiconformalLensMap:
+    """Test the quasiconformal variant of the lens map (`quasiconformal` flag)."""
+
+    @pytest.mark.unit
+    def test_default_is_the_original_map(self):
+        """The flag defaults to False and reproduces the original map exactly."""
+        from desc.basis import lens_map, sharp_map
+
+        rng = np.random.default_rng(0)
+        ρ = rng.uniform(1e-9, 1 - 1e-12, 500)
+        α = rng.uniform(0, 2 * np.pi, 500)
+        ζ = rng.uniform(0, 2 * np.pi, 500)
+        for m_b in [1, 2, 3, 5]:
+            for β in [0.3 * np.pi, 0.75 * np.pi]:
+                a = np.asarray(lens_map(ρ, α, m_b, β))
+                b = np.asarray(lens_map(ρ, α, m_b, β, False, False))
+                np.testing.assert_array_equal(a, b)
+        a = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 0.75 * np.pi, "lens", False))
+        b = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 0.75 * np.pi, "lens", False, False))
+        np.testing.assert_array_equal(a, b)
+
+    @pytest.mark.unit
+    def test_matches_strip_form(self):
+        """The quasiconformal map equals tanh(ψ(t) + i γ s), computed independently."""
+        from desc.basis import LENS_PSI_TAU, lens_map
+
+        rng = np.random.default_rng(1)
+        ρ = rng.uniform(1e-6, 1 - 1e-12, 500)
+        α = rng.uniform(0, 2 * np.pi, 500)
+        τ = LENS_PSI_TAU
+        for m_b in [1, 2, 3]:
+            for β in [0.3 * np.pi, 0.75 * np.pi, 0.95 * np.pi]:
+                γ = β / np.pi
+                zz = ρ ** (m_b / 2.0) * np.exp(1j * α * m_b / 2)
+                w = np.arctanh(zz)
+                t = w.real - (1 - γ) * τ * np.tanh(w.real / τ)
+                L2 = np.tanh(t + 1j * γ * w.imag)
+                ang = np.angle(L2)
+                arg = ang + 2 * np.pi * np.round((m_b * α / 2 - ang) / (2 * np.pi))
+                ref = np.abs(L2) ** (2.0 / m_b) * np.exp(2j * arg / m_b)
+                got = np.asarray(lens_map(ρ, α, m_b, β, False, True))
+                np.testing.assert_allclose(got, ref, atol=1e-10)
+
+    @pytest.mark.unit
+    def test_interior_surfaces_are_circular(self):
+        """The taper keeps interior flux surfaces circular, even for m_b>2."""
+        from desc.basis import lens_map
+
+        θ = np.linspace(0, 2 * np.pi, 401)[:-1]
+        for m_b in [2, 3, 4, 5]:
+            r = np.abs(np.asarray(
+                lens_map(np.full_like(θ, 0.01), θ, m_b, 0.75 * np.pi, False, True)))
+            # max/min around a surface; 1.0 is a perfect circle
+            assert r.max() / r.min() < 1.02, (m_b, r.max() / r.min())
+
+    @pytest.mark.unit
+    def test_same_image_and_identity_at_beta_pi(self):
+        """Same lens region (LCFS lies on the same circular arc); β=π is identity."""
+        from desc.basis import lens_map
+
+        def circfit(B):
+            x, y = np.real(B), np.imag(B)
+            A = np.stack([x, y, np.ones_like(x)], 1)
+            c = np.linalg.lstsq(A, x**2 + y**2, rcond=None)[0]
+            cx, cy = c[0] / 2, c[1] / 2
+            return np.array([cx, cy, np.sqrt(c[2] + cx**2 + cy**2)])
+
+        θ = np.linspace(1e-6, np.pi - 1e-6, 20001)
+        one = np.full_like(θ, 1 - 1e-12)
+        for β in [0.3 * np.pi, 0.5 * np.pi, 0.75 * np.pi]:
+            old = circfit(np.asarray(lens_map(one, θ, 2, β, False, False)))
+            new = circfit(np.asarray(lens_map(one, θ, 2, β, False, True)))
+            np.testing.assert_allclose(new, old, atol=1e-8)
+
+        rng = np.random.default_rng(2)
+        ρ = rng.uniform(1e-6, 1 - 1e-12, 200)
+        α = rng.uniform(0, 2 * np.pi, 200)
+        np.testing.assert_allclose(
+            np.asarray(lens_map(ρ, α, 2, np.pi, False, True)),
+            ρ * np.exp(1j * α),
+            atol=1e-12,
+        )
+
+    @pytest.mark.unit
+    def test_area_element_is_bounded(self):
+        """dÃ/dA is bounded above and below (the conformal map is ~1e6)."""
+        import jax
+        import jax.numpy as jnp
+
+        from desc.basis import lens_map
+
+        R, T = np.meshgrid(
+            np.linspace(1e-3, 1 - 1e-12, 80), np.linspace(0, 2 * np.pi, 161),
+            indexing="ij",
+        )
+        R, T = jnp.asarray(R.ravel()), jnp.asarray(T.ravel())
+        for β in [0.25 * np.pi, 0.75 * np.pi]:
+
+            def f(r, t):
+                w = lens_map(
+                    jnp.atleast_1d(r), jnp.atleast_1d(t), 2, β, False, True
+                )[0]
+                return jnp.array([jnp.real(w), jnp.imag(w)])
+
+            J = jax.vmap(jax.jacfwd(f, argnums=(0, 1)))(R, T)
+            v = jax.vmap(f)(R, T)
+            x, y = v[:, 0], v[:, 1]
+            xr, yr, xt, yt = J[0][:, 0], J[0][:, 1], J[1][:, 0], J[1][:, 1]
+            r2 = x * x + y * y
+            det = ((x * xr + y * yr) / jnp.sqrt(r2) * (x * yt - y * xt) / r2
+                   - (x * xt + y * yt) / jnp.sqrt(r2) * (x * yr - y * xr) / r2)
+            ar = np.asarray(jnp.sqrt(r2) / R * det)
+            ar = ar[np.isfinite(ar)]
+            assert ar.min() > 0
+            # no closed form for the tapered map; just check it stays sane.
+            # measured at τ=0.5: ≈66 at β=0.25π and ≈4.2 at β=0.75π, against
+            # ≈1e14 and ≈2.7e6 for the conformal map.
+            assert ar.max() / ar.min() < (100.0 if β < 0.5 * np.pi else 10.0)
+
+    @pytest.mark.unit
+    def test_basis_flag_plumbing(self):
+        """The flag reaches SharpFourierZernikeBasis and changes its output."""
+        # number=4 places the sharp map inside the Zernike; number=0 would
+        # bypass the map entirely and the two bases would agree trivially.
+        basis_old = SharpFourierZernikeBasis(L=2, M=3, N=2, m_b=2, n_b=2, number=4)
+        basis_new = SharpFourierZernikeBasis(
+            L=2, M=3, N=2, m_b=2, n_b=2, number=4, quasiconformal=True
+        )
+        assert basis_old.quasiconformal is False
+        assert basis_new.quasiconformal is True
+        assert basis_old != basis_new
+        nodes = np.array([[0.5, np.pi / 4, 0.1], [0.3, np.pi / 2, 0.2]])
+        a = basis_old.evaluate(nodes)
+        b = basis_new.evaluate(nodes)
+        assert np.isfinite(b).all()
+        assert not np.allclose(a, b)
+
+    @pytest.mark.unit
+    def test_hypergeometric_guard(self):
+        """quasiconformal=True is rejected for the hypergeometric map."""
+        with pytest.raises(ValueError):
+            SharpFourierZernikeBasis(
+                L=2, M=3, N=2, m_b=5, sharp_type="hypergeometric",
+                quasiconformal=True,
+            )

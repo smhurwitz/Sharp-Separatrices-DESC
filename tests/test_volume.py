@@ -401,3 +401,32 @@ class TestGeneralizedZernikeRZToroidalVolume:
 
         np.testing.assert_allclose(R_vol, R_axis)
         np.testing.assert_allclose(Z_vol, Z_axis)
+
+class TestQuasiconformalFlag:
+    """Test the `quasiconformal` flag on GeneralizedFourierZernikeRZToroidalVolume."""
+
+    @pytest.mark.unit
+    def test_default_is_false(self):
+        """Default preserves the original lens map."""
+        vol = GeneralizedFourierZernikeRZToroidalVolume()
+        assert vol.quasiconformal is False
+        assert vol.R_basis.quasiconformal is False
+        assert vol.Z_basis.quasiconformal is False
+
+    @pytest.mark.unit
+    def test_flag_propagates_to_bases(self):
+        """The flag reaches both sharp sub-bases."""
+        vol = GeneralizedFourierZernikeRZToroidalVolume(quasiconformal=True)
+        assert vol.quasiconformal is True
+        assert vol.R_basis.quasiconformal is True
+        assert vol.Z_basis.quasiconformal is True
+        assert vol.R_basis.shp_basis.quasiconformal is True
+        assert vol.Z_basis.shp_basis.quasiconformal is True
+
+    @pytest.mark.unit
+    def test_hypergeometric_guard(self):
+        """quasiconformal=True is rejected for the hypergeometric map."""
+        with pytest.raises(ValueError):
+            GeneralizedFourierZernikeRZToroidalVolume(
+                m_b=3, n_b=3, sharp_type="hypergeometric", quasiconformal=True
+            )

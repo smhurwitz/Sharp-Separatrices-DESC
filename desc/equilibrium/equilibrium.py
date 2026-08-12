@@ -2919,6 +2919,11 @@ class SharpEquilibrium(Equilibrium):
         If `True`, attempts to space quadrature points more evenly than the
         original sharp mapping (see ``desc.basis.sharp_map``). Default ``volume.fix_quadrature``
         or `False`.
+    quasiconformal : bool (optional)
+        If `True`, use the quasiconformal variant of the lens map, which has the
+        same image but a bounded Jacobian (see ``desc.basis.lens_map``). Only
+        valid for ``sharp_type="lens"``. Default ``volume.quasiconformal`` or
+        `False`, the original map.
     L_grid : int (optional)
         resolution of real space nodes in radial direction
     M_grid : int (optional)
@@ -2987,6 +2992,7 @@ class SharpEquilibrium(Equilibrium):
         "β",
         "sharp_type",
         "fix_quadrature",
+        "quasiconformal",
         "_R_basis",
         "_Z_basis",
         "_L_basis",
@@ -3021,6 +3027,7 @@ class SharpEquilibrium(Equilibrium):
         "β",
         "sharp_type",
         "fix_quadrature",
+        "quasiconformal",
         "_L_grid",
         "_M_grid",
         "_N_grid",
@@ -3047,6 +3054,7 @@ class SharpEquilibrium(Equilibrium):
         β=0.75*np.pi,
         sharp_type="lens",
         fix_quadrature=None,
+        quasiconformal=None,
         L_grid=None,
         M_grid=None,
         N_grid=None,
@@ -3177,6 +3185,13 @@ class SharpEquilibrium(Equilibrium):
         self._fix_quadrature = bool(
             setdefault(fix_quadrature, getattr(self._volume, "fix_quadrature", False))
         )
+        self._quasiconformal = bool(
+            setdefault(quasiconformal, getattr(self._volume, "quasiconformal", False))
+        )
+        if self._quasiconformal and sharp_type != "lens":
+            raise ValueError(
+                "quasiconformal=True is only defined for sharp_type='lens'."
+            )
 
         L_shp = check_nonnegint(L_shp, "L_shp")
         M_shp = check_nonnegint(M_shp, "M_shp")
@@ -3206,6 +3221,7 @@ class SharpEquilibrium(Equilibrium):
             sym=self._R_sym,
             spectral_indexing=self.spectral_indexing,
             fix_quadrature=self.fix_quadrature,
+            quasiconformal=self.quasiconformal,
         )
         self._R_basis = GeneralizedFourierZernikeBasis(R_basis_std, R_basis_shp)
 
@@ -3229,6 +3245,7 @@ class SharpEquilibrium(Equilibrium):
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
             fix_quadrature=self.fix_quadrature,
+            quasiconformal=self.quasiconformal,
         )
         self._Z_basis = GeneralizedFourierZernikeBasis(Z_basis_std, Z_basis_shp)
 
@@ -3252,6 +3269,7 @@ class SharpEquilibrium(Equilibrium):
             sym=self._Z_sym,
             spectral_indexing=self.spectral_indexing,
             fix_quadrature=self.fix_quadrature,
+            quasiconformal=self.quasiconformal,
         )
         self._L_basis = GeneralizedFourierZernikeBasis(L_basis_std, L_basis_shp)
 
@@ -4138,6 +4156,13 @@ class SharpEquilibrium(Equilibrium):
         """bool: whether to space quadrature points more evenly (see
         `desc.basis.sharp_map`)."""
         return self._fix_quadrature
+
+    @property
+    def quasiconformal(self):
+        """bool: whether to use the quasiconformal lens map (see
+        `desc.basis.lens_map`)."""
+        # getattr for backwards compatibility with objects saved before this flag
+        return getattr(self, "_quasiconformal", False)
 
     @optimizable_parameter
     @property

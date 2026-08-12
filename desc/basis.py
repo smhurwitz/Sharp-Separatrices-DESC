@@ -1771,6 +1771,12 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         """bool: whether the sharp basis component spaces quadrature points more
         evenly (see `sharp_map`)."""
         return self.shp_basis.fix_quadrature
+
+    @property
+    def quasiconformal(self):
+        """bool: whether the sharp basis component uses the quasiconformal
+        variant of the lens map (see `lens_map`)."""
+        return self.shp_basis.quasiconformal
     
     @property
     def sym(self):
@@ -1895,6 +1901,10 @@ class SharpFourierZernikeBasis(_Basis):
     fix_quadrature : bool
         If `True`, attempts to space quadrature points more evenly than the
         original sharp mapping (see `sharp_map`). Default is `False`.
+    quasiconformal : bool
+        If `True`, use the quasiconformal variant of the lens map, which has the
+        same image but a bounded Jacobian (see `lens_map`). Only valid for
+        ``sharp_type="lens"``. Default is `False`, the original map.
 
     """
 
@@ -1913,7 +1923,8 @@ class SharpFourierZernikeBasis(_Basis):
                  sym=False,
                  spectral_indexing="ansi",
                  number=4,
-                 fix_quadrature=False):
+                 fix_quadrature=False,
+                 quasiconformal=False):
         self._L = check_nonnegint(L, "L", False)
         self._M = check_nonnegint(M, "M", False)
         self._N = check_nonnegint(N, "N", False)
@@ -1932,6 +1943,11 @@ class SharpFourierZernikeBasis(_Basis):
         self._number = check_nonnegint(number, "number", False)
         assert self._number in [0, 1, 4, 6], "Unknown method number: {}".format(number)
         self._fix_quadrature = bool(fix_quadrature)
+        self._quasiconformal = bool(quasiconformal)
+        if self._quasiconformal and sharp_type != "lens":
+            raise ValueError(
+                "quasiconformal=True is only defined for sharp_type='lens'."
+            )
         self._modes = self._get_modes(
             L=self.L, M=self.M, N=self.N, spectral_indexing=self.spectral_indexing
         )
@@ -2124,6 +2140,7 @@ class SharpFourierZernikeBasis(_Basis):
                 sharp_type=self.sharp_type,
                 number=self.number,
                 fix_quadrature=self.fix_quadrature,
+                quasiconformal=self.quasiconformal,
             )[0, 0]
 
             tor = fourier(
@@ -2171,6 +2188,7 @@ class SharpFourierZernikeBasis(_Basis):
             and self.sharp_type == other.sharp_type
             and self.number == other.number
             and self.fix_quadrature == other.fix_quadrature
+            and self.quasiconformal == other.quasiconformal
             and super().__eq__(other)
         )
     
@@ -2207,6 +2225,12 @@ class SharpFourierZernikeBasis(_Basis):
     def fix_quadrature(self):
         """bool: whether to space quadrature points more evenly (see `sharp_map`)."""
         return self._fix_quadrature
+
+    @property
+    def quasiconformal(self):
+        """bool: whether to use the quasiconformal lens map (see `lens_map`)."""
+        # getattr for backwards compatibility with objects saved before this flag
+        return getattr(self, "_quasiconformal", False)
 
 
 def polyder_vec(p, m, exact=False):
@@ -2759,11 +2783,12 @@ def _jacobi_jvp(dx, x, xdot):
     return f, df * xdot
 
 
-@functools.partial(jit, static_argnums=[3,4,5,6,7])
-def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False):
+@functools.partial(jit, static_argnums=[3,4,5,6,7,8])
+def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False,
+              quasiconformal=False):
     """
     Perform the sharp mapping from unit disc to the desired shape.
-    
+
     Parameters
     ----------
     ρ : ndarray
@@ -2782,6 +2807,10 @@ def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False):
         Method for sharp mapping, either "lens" or "hypergeometric".
     fix_quadrature : bool
         If `True`, attempts to space quadrature points more evenly than the original map.
+    quasiconformal : bool
+        If `True`, use the quasiconformal variant of the lens map, which has the
+        same image but a bounded Jacobian (see `lens_map`). Only valid for
+        ``sharp_type="lens"``. Default is `False`, the original map.
 
     Returns
     -------
@@ -2792,9 +2821,16 @@ def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False):
 
     α_b = θ - n_b * ζ / m_b
     if sharp_type == "hypergeometric":
+        if quasiconformal:
+            raise ValueError(
+                "quasiconformal=True is only defined for sharp_type='lens', "
+                "not 'hypergeometric'."
+            )
         return hyp2f1_map(ρ, α_b, m_b, fix_quadrature) * jnp.exp(1j * n_b * ζ / m_b)
     elif sharp_type == "lens":
-        return lens_map(ρ, α_b, m_b, β, fix_quadrature) * jnp.exp(1j * n_b * ζ / m_b)
+        return lens_map(
+            ρ, α_b, m_b, β, fix_quadrature, quasiconformal
+        ) * jnp.exp(1j * n_b * ζ / m_b)
     else:
         raise ValueError("Unknown sharp_type: {}".format(sharp_type))
 
@@ -2842,10 +2878,45 @@ def hyp2f1_map(ρ, α, m_b, fix_quadrature=False):
     return jnp.array([hyp2f1(a, b, c, zi ** m_b) * zi / hyp2f1(a, b, c, 1) for zi in z])
 
     
-@functools.partial(jit, static_argnums=[2, 3, 4])
-def lens_map(ρ, α, m_b, β, fix_quadrature=False):
+#: Taper width τ for the quasiconformal lens map (see `lens_map`). τ→0 recovers
+#: the untapered map, whose interior surfaces are lobed for m_b>2; τ→∞ recovers
+#: the conformal map, whose Jacobian is unbounded at the corners. Larger τ gives
+#: rounder interior surfaces at the cost of more area-element distortion, and
+#: the penalty grows as β shrinks, so prefer a smaller τ for very sharp corners.
+LENS_PSI_TAU = 0.5
+
+
+@functools.partial(jit, static_argnums=[2, 3, 4, 5])
+def lens_map(ρ, α, m_b, β, fix_quadrature=False, quasiconformal=False):
     """
     Performs mapping from unit disc to an m_b-lens.
+
+    Two variants of the underlying 2-corner map are available, selected by
+    ``quasiconformal``. Writing γ=β/π, the original (conformal) map is
+
+        L₂(z) = [(1+z)^γ - (1-z)^γ] / [(1+z)^γ + (1-z)^γ],
+
+    whose Jacobian is unbounded at the corners: ∂ρ̃/∂ρ and ∂θ̃/∂θ grow like
+    r^(γ-1) there, so surface and volume elements blow up.
+
+    The quasiconformal variant works in strip coordinates. With
+    w = artanh(z) = t + i s the unit disc is the strip |s| < π/4, the corners
+    sit at t = ±∞, and the conformal map is simply w -> γw. The image region is
+    fixed by the transverse scaling s -> γs alone (the boundary is s = ±π/4);
+    the along-strip map t -> ψ(t) is completely free and cannot move the
+    boundary. Choosing
+
+        ψ(t) = t - (1-γ) τ tanh(t/τ),        τ = LENS_PSI_TAU
+
+    gives ψ'(0) = γ, so the map is conformal at the magnetic axis and the
+    interior surfaces stay circular, and ψ'(±∞) = 1, so it is quasiconformal at
+    the corners and the Jacobian stays bounded. ψ is odd and strictly
+    increasing with ψ' in [γ, 1].
+
+    The image region and corner angle β are *identical* to the conformal map.
+    At β=0.75π the area element ratio dÃ/dA has condition number ≈4.2 over the
+    disc, against ≈2.7e6 for the conformal map. The price is that the map is no
+    longer conformal. Setting γ=1 returns the identity in both cases.
 
     Parameters
     ----------
@@ -2860,6 +2931,9 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=False):
     fix_quadrature : bool
         If `True`, attempts to space quadrature points more evenly than the
         original map.
+    quasiconformal : bool
+        If `True`, use the quasiconformal variant described above. Default is
+        `False`, which reproduces the original map exactly.
 
     Returns
     -------
@@ -2875,13 +2949,24 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=False):
         zt = ((1+z)**(β/π)-(1-z)**(β/π))/((1+z)**(β/π)+(1-z)**(β/π))
         return zt
 
+    def lens_map_2D_qc(z, β):
+        """Tapered quasiconformal map, via the strip w = arctanh(z) = t + i s."""
+        γ = β / π
+        τ = LENS_PSI_TAU
+        w = jnp.arctanh(z)
+        t, s = jnp.real(w), jnp.imag(w)
+        t = t - (1.0 - γ) * τ * jnp.tanh(t / τ)   # ψ: conformal at the axis,
+        return jnp.tanh(t + 1j * γ * s)           # QC at the corners.  s -> γs
+                                                  # alone fixes the image region.
+
     if fix_quadrature:
         α = α * 1.0 - min(1, 2*(0.99-(β/π)))* ρ**m_b * (jnp.sin(m_b * α)  / m_b)
 
     z = ρ * jnp.exp(1j * α)
     z = jnp.asarray(z)
-    
-    L2 = lens_map_2D(jnp.asarray(ρ ** (m_b / 2.0) * jnp.exp(1j * α * m_b / 2)), β)
+
+    map_2D = lens_map_2D_qc if quasiconformal else lens_map_2D
+    L2 = map_2D(jnp.asarray(ρ ** (m_b / 2.0) * jnp.exp(1j * α * m_b / 2)), β)
     L2 = jnp.atleast_1d(L2)
     rad = jnp.abs(L2)
     angle = jnp.angle(L2)
@@ -2891,8 +2976,8 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=False):
     return LM
 
 
-@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13])
-def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4, fix_quadrature=False):
+@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4, fix_quadrature=False, quasiconformal=False):
     """Evaluate the sharp Zernike polynomial for given mode numbers at given nodes.
 
     Parameters
@@ -2930,6 +3015,10 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
     fix_quadrature : bool
         If `True`, attempts to space quadrature points more evenly than the
         original sharp mapping (see `sharp_map`).
+    quasiconformal : bool
+        If `True`, use the quasiconformal variant of the lens map, which has the
+        same image but a bounded Jacobian (see `lens_map`). Default is `False`,
+        the original map.
 
     Returns
     -------
@@ -2947,16 +3036,16 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
         return zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
     elif number == 1:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
         return jnp.abs(z_tilde) * std_val
     elif number == 4:
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
         r_tilde = jnp.abs(z_tilde)
         t_tilde = jnp.angle(z_tilde)
         return zernike_radial(r_tilde, l, m, dr=0) * fourier(t_tilde, m, dt=0)
     elif number == 6:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
 
         sharp_val = jnp.where(
             m == -1,

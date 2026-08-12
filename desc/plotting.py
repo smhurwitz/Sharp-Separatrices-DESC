@@ -3996,7 +3996,7 @@ def plot_basis(  # noqa : C901
     
     elif basis.__class__.__name__ == "GeneralizedFourierZernikeBasis":
         std_basis = basis.std_basis
-        shp_basis = basis.shrp_basis
+        shp_basis = basis.shp_basis
 
         L_std = int(np.max(std_basis.modes[:, 0])) if std_basis.modes.size else 0
         M_std = int(np.max(np.abs(std_basis.modes[:, 1]))) if std_basis.modes.size else 0
