@@ -19,7 +19,7 @@ from desc.backend import (
     tree_map_with_path,
     tree_structure,
 )
-from desc.basis import zernike_radial
+from desc.basis import GeneralizedFourierZernikeBasis, zernike_radial
 from desc.geometry import FourierRZCurve
 from desc.utils import broadcast_tree, errorif, setdefault
 
@@ -443,6 +443,78 @@ class ShareParameters(_Objective):
         )
 
 
+def _generalized_boundary_matrices(basis):
+    """Self-consistency matrices for a GeneralizedFourierZernikeBasis at rho=1.
+
+    For a SharpEquilibrium the interior R/Z and the boundary (``volume``) live in the
+    same generalized basis, so the boundary degrees of freedom are the "boundary
+    modes" (all sharp modes plus the standard modes with l=|m|) rather than a
+    separate double-Fourier surface. This returns ``(A, B)`` (each of shape
+    ``(num_boundary_modes, num_modes)``) such that the self-consistency residual
+    ``A @ R_lmn - B @ Rb_lmn = 0`` expresses "interior evaluated at rho=1 equals the
+    prescribed boundary shape":
+
+    * ``A`` is the *interior* side. For a sharp boundary mode it is the identity
+      row (pin the interior sharp coefficient); for a standard boundary mode (m, n)
+      it sums the interior standard coefficients sharing (m, n) with their rho=1
+      Zernike values (all equal to 1), matching standard ``BoundaryRSelfConsistency``.
+    * ``B`` is the *boundary* side and is a pure selection: each row picks out the
+      volume's own coefficient for that boundary mode. Mirroring standard DESC
+      (where the RHS is the single double-Fourier boundary coefficient), the
+      volume's non-boundary (l>|m|) coefficients therefore never enter the
+      constraint, so a free interior volume mode cannot absorb the boundary shape.
+
+    The magnetic-axis mode (l=2, m=0) is excluded here (``fix_MA=False``); the axis
+    is handled separately by ``AxisRSelfConsistency`` / ``AxisZSelfConsistency``.
+    """
+    modes = basis.modes
+    bmodes, _ = basis.get_boundary_modes(fix_MA=False)
+    A = np.zeros((len(bmodes), len(modes)))
+    B = np.zeros((len(bmodes), len(modes)))
+    for bi, (lb, mb, nb) in enumerate(bmodes):
+        b_col = np.argwhere((modes == [lb, mb, nb]).all(axis=1)).flatten()
+        B[bi, b_col] = 1.0  # boundary side: select the volume's own coefficient
+        if lb < 0:  # sharp mode: pin interior coefficient to the volume's
+            A[bi, b_col] = 1.0
+        else:  # standard mode: sum interior standard modes sharing (m, n) at rho=1
+            match = (modes[:, 0] >= 0) & (modes[:, 1] == mb) & (modes[:, 2] == nb)
+            idx = np.argwhere(match).flatten()
+            A[bi, idx] = zernike_radial(
+                np.ones(idx.size), modes[idx, 0], modes[idx, 1]
+            )
+    return A, B
+
+
+def _fix_boundary_indices(eq, eq_basis, coord, modes):
+    """Indices of boundary DOF to freeze for FixBoundaryR / FixBoundaryZ.
+
+    For a standard Equilibrium the boundary is a double-Fourier surface and this
+    reproduces the original behaviour (``modes=True`` fixes all surface modes).
+
+    For a SharpEquilibrium the boundary lives in the interior's generalized basis,
+    so ``modes=True`` fixes exactly the boundary modes -- all sharp (l<0) modes and
+    all standard l=|m| modes (``get_boundary_modes(fix_MA=False)``) -- leaving the
+    interior standard modes with l>|m| free.
+    """
+    if isinstance(eq_basis, GeneralizedFourierZernikeBasis):
+        if isinstance(modes, bool):
+            if not modes:
+                return np.array([], dtype=int)
+            bmodes, _ = eq_basis.get_boundary_modes(fix_MA=False)
+        else:
+            bmodes = np.atleast_2d(modes)
+        return np.array([eq_basis.get_idx(*m) for m in bmodes], dtype=int)
+
+    # standard Equilibrium: fix modes on the double-Fourier surface basis
+    surf_basis = getattr(eq.surface, f"{coord}_basis")
+    if isinstance(modes, bool):
+        return modes
+    indices = np.array([], dtype=int)
+    for mode in np.atleast_2d(modes):
+        indices = np.append(indices, surf_basis.get_idx(*mode))
+    return indices
+
+
 class BoundaryRSelfConsistency(_Objective):
     """Ensure that the boundary and interior surfaces are self-consistent.
 
@@ -505,6 +577,20 @@ class BoundaryRSelfConsistency(_Objective):
 
         """
         eq = self.things[0]
+        # SharpEquilibrium: interior and boundary (volume) share one generalized
+        # basis, so the boundary DOF are the generalized boundary modes.
+        if isinstance(eq.R_basis, GeneralizedFourierZernikeBasis):
+            errorif(
+                self._surface_label is not None,
+                NotImplementedError,
+                "surface_label != rho=1 is not supported for a SharpEquilibrium; "
+                "its boundary is defined by the volume at rho=1.",
+            )
+            self._A, self._B = _generalized_boundary_matrices(eq.R_basis)
+            self._dim_f = self._A.shape[0]
+            super().build(use_jit=use_jit, verbose=verbose)
+            return
+
         modes = eq.surface.R_basis.modes
         idx = np.arange(eq.surface.R_basis.num_modes)
 
@@ -526,6 +612,10 @@ class BoundaryRSelfConsistency(_Objective):
         self._A[Js[:, 0], np.arange(eq.R_basis.num_modes)] = zernike_radial(
             surf, eq.R_basis.modes[:, 0], eq.R_basis.modes[:, 1]
         )
+        # Rb_lmn is the boundary double-Fourier vector (one entry per constraint),
+        # so f = A @ R_lmn - I @ Rb_lmn. Keeping B explicit makes compute branchless
+        # (a Python branch on a stored flag would be traced under JIT).
+        self._B = np.eye(self._dim_f)
         super().build(use_jit=use_jit, verbose=verbose)
 
     def compute(self, params, constants=None):
@@ -548,7 +638,7 @@ class BoundaryRSelfConsistency(_Objective):
             boundary R self-consistency errors.
 
         """
-        return jnp.dot(self._A, params["R_lmn"]) - params["Rb_lmn"]
+        return jnp.dot(self._A, params["R_lmn"]) - jnp.dot(self._B, params["Rb_lmn"])
 
 
 class BoundaryZSelfConsistency(_Objective):
@@ -615,6 +705,20 @@ class BoundaryZSelfConsistency(_Objective):
 
         """
         eq = self.things[0]
+        # SharpEquilibrium: interior and boundary (volume) share one generalized
+        # basis, so the boundary DOF are the generalized boundary modes.
+        if isinstance(eq.Z_basis, GeneralizedFourierZernikeBasis):
+            errorif(
+                self._surface_label is not None,
+                NotImplementedError,
+                "surface_label != rho=1 is not supported for a SharpEquilibrium; "
+                "its boundary is defined by the volume at rho=1.",
+            )
+            self._A, self._B = _generalized_boundary_matrices(eq.Z_basis)
+            self._dim_f = self._A.shape[0]
+            super().build(use_jit=use_jit, verbose=verbose)
+            return
+
         modes = eq.surface.Z_basis.modes
         idx = np.arange(eq.surface.Z_basis.num_modes)
 
@@ -636,6 +740,10 @@ class BoundaryZSelfConsistency(_Objective):
         self._A[Js[:, 0], np.arange(eq.Z_basis.num_modes)] = zernike_radial(
             surf, eq.Z_basis.modes[:, 0], eq.Z_basis.modes[:, 1]
         )
+        # Zb_lmn is the boundary double-Fourier vector (one entry per constraint),
+        # so f = A @ Z_lmn - I @ Zb_lmn. Keeping B explicit makes compute branchless
+        # (a Python branch on a stored flag would be traced under JIT).
+        self._B = np.eye(self._dim_f)
         super().build(use_jit=use_jit, verbose=verbose)
 
     def compute(self, params, constants=None):
@@ -658,7 +766,7 @@ class BoundaryZSelfConsistency(_Objective):
             boundary Z self-consistency errors.
 
         """
-        return jnp.dot(self._A, params["Z_lmn"]) - params["Zb_lmn"]
+        return jnp.dot(self._A, params["Z_lmn"]) - jnp.dot(self._B, params["Zb_lmn"])
 
 
 class AxisRSelfConsistency(_Objective):
@@ -901,12 +1009,7 @@ class FixBoundaryR(FixParameters):
         modes=True,
         name="lcfs R",
     ):
-        if isinstance(modes, bool):
-            indices = modes
-        else:
-            indices = np.array([], dtype=int)
-            for mode in np.atleast_2d(modes):
-                indices = np.append(indices, eq.surface.R_basis.get_idx(*mode))
+        indices = _fix_boundary_indices(eq, eq.R_basis, "R", modes)
         super().__init__(
             thing=eq,
             params={"Rb_lmn": indices},
@@ -982,12 +1085,7 @@ class FixBoundaryZ(FixParameters):
         modes=True,
         name="lcfs Z",
     ):
-        if isinstance(modes, bool):
-            indices = modes
-        else:
-            indices = np.array([], dtype=int)
-            for mode in np.atleast_2d(modes):
-                indices = np.append(indices, eq.surface.Z_basis.get_idx(*mode))
+        indices = _fix_boundary_indices(eq, eq.Z_basis, "Z", modes)
         super().__init__(
             thing=eq,
             params={"Zb_lmn": indices},

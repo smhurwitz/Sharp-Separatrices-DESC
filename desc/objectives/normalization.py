@@ -10,6 +10,7 @@ from desc.utils import warnif
 def compute_scaling_factors(thing):
     """Compute dimensional quantities for normalizations."""
     # local import to avoid circular import
+    from desc.basis import GeneralizedFourierZernikeBasis
     from desc.equilibrium import Equilibrium
     from desc.geometry import FourierRZToroidalSurface
 
@@ -27,9 +28,18 @@ def compute_scaling_factors(thing):
         raise ValueError("No modes found, geometry is unphysical.")
 
     if isinstance(thing, Equilibrium):
-        R00 = thing.Rb_lmn[thing.surface.R_basis.get_idx(M=0, N=0)]
-        R10 = get_max_mode(thing.surface.R_basis, thing.surface.R_lmn)
-        Z10 = get_max_mode(thing.surface.Z_basis, thing.surface.Z_lmn)
+        if isinstance(thing.R_basis, GeneralizedFourierZernikeBasis):
+            # SharpEquilibrium: boundary is the volume in the generalized basis.
+            # Use the (l=0, m=0, n=0) coefficient for the major radius and the
+            # largest shaping coefficient for the minor radius scale.
+            vol = thing.volume
+            R00 = vol.R_lmn[vol.R_basis.get_idx(0, 0, 0)]
+            R10 = get_max_mode(vol.R_basis, vol.R_lmn)
+            Z10 = get_max_mode(vol.Z_basis, vol.Z_lmn)
+        else:
+            R00 = thing.Rb_lmn[thing.surface.R_basis.get_idx(M=0, N=0)]
+            R10 = get_max_mode(thing.surface.R_basis, thing.surface.R_lmn)
+            Z10 = get_max_mode(thing.surface.Z_basis, thing.surface.Z_lmn)
 
         scales["R0"] = R00
         scales["a"] = np.sqrt(np.abs(R10 * Z10))

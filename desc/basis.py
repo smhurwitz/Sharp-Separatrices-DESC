@@ -1496,7 +1496,7 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         "_sym",
         "_spectral_indexing",
         "_std_basis",
-        "_shrp_basis",
+        "_shp_basis",
     ]
 
     _static_attrs = [
@@ -1517,6 +1517,9 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         assert std_basis.sym == shp_basis.sym, "std_basis and shrp_basis must have the same sym"
         assert std_basis.N == shp_basis.N, "std_basis and shrp_basis must have the same N"
         assert std_basis.spectral_indexing == shp_basis.spectral_indexing, "std_basis and shrp_basis must have the same spectral_indexing"
+
+        # materialize so it is always present for save/load and pytree flattening
+        self._spectral_indexing = std_basis.spectral_indexing
 
         self._modes = self._get_modes()
         self._enforce_symmetry()
@@ -1612,9 +1615,15 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         sharp_modes[:, 0] = -sharp_modes[:, 0]
         A_sharp = self.shp_basis.evaluate(grid, derivatives, modes=sharp_modes)
         A_std = self.std_basis.evaluate(grid, derivatives, modes=std_modes)
-        A = np.empty((len(grid.nodes), len(modes)))
-        A[:, std_mask] = A_std
-        A[:, sharp_mask] = A_sharp
+        # Column indices are derived from `modes` (static), while A_std / A_sharp
+        # may be traced JAX arrays (e.g. inside jitted map_coordinates / solve).
+        # Build the result with jnp so it stays differentiable and JIT-safe
+        # instead of assigning traced arrays into a numpy buffer.
+        std_cols = np.nonzero(std_mask)[0]
+        sharp_cols = np.nonzero(sharp_mask)[0]
+        A = jnp.zeros((len(grid.nodes), len(modes)))
+        A = A.at[:, std_cols].set(A_std)
+        A = A.at[:, sharp_cols].set(A_sharp)
         return A
 
     
@@ -1691,6 +1700,16 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         # ensure things that should be ints are ints
         self._NFP = int(self._NFP)
         self._modes = self._modes.astype(int)
+        # resolution attributes are derived from the sub-bases (the single source
+        # of truth), so re-derive them here for objects restored from file where
+        # they are not stored directly.
+        self._spectral_indexing = self._std_basis.spectral_indexing
+        self._L = self._std_basis.L
+        self._M = self._std_basis.M
+        self._N = self._std_basis.N
+        self._L_shp = self._shp_basis.L
+        self._M_shp = self._shp_basis.M
+        self._N_shp = self._shp_basis.N
     
     def _enforce_symmetry(self):
         """Enforce stellarator symmetry."""
@@ -1844,9 +1863,15 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
 
     def __eq__(self, other):
         """Check if two basis objects are equal."""
-        raise NotImplementedError("TODO")
-        
-    
+        if not isinstance(other, GeneralizedFourierZernikeBasis):
+            return False
+        return (
+            self.__class__ == other.__class__
+            and self._std_basis == other._std_basis
+            and self._shp_basis == other._shp_basis
+        )
+
+
 class SharpFourierZernikeBasis(_Basis):
     """3D basis set for analytic functions in a toroidal volume.
 
@@ -1911,11 +1936,34 @@ class SharpFourierZernikeBasis(_Basis):
     _fft_poloidal = False
     _fft_toroidal = True
 
-    def __init__(self, 
-                 L, 
-                 M, 
-                 N, 
-                 NFP=1, 
+    # extend the base basis attributes with the sharp-specific state so that
+    # save/load and JAX pytree flattening round-trip a SharpFourierZernikeBasis
+    # completely (otherwise m_b, n_b, β, ... are lost on reload).
+    _io_attrs_ = _Basis._io_attrs_ + [
+        "_m_b",
+        "_n_b",
+        "_β",
+        "_sharp_type",
+        "_number",
+        "_fix_quadrature",
+        "_quasiconformal",
+    ]
+
+    _static_attrs = _Basis._static_attrs + [
+        "_m_b",
+        "_n_b",
+        "_β",
+        "_sharp_type",
+        "_number",
+        "_fix_quadrature",
+        "_quasiconformal",
+    ]
+
+    def __init__(self,
+                 L,
+                 M,
+                 N,
+                 NFP=1,
                  m_b=1, 
                  n_b=1, 
                  β=0.75*np.pi, 

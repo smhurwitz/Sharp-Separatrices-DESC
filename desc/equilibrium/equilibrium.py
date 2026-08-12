@@ -2970,6 +2970,26 @@ class SharpEquilibrium(Equilibrium):
         run a small optimization problem to attempt to refine initial guess to improve
         coordinate mapping.
 
+    Notes
+    -----
+    Design note on inheritance: ``SharpEquilibrium`` subclasses ``Equilibrium`` on
+    purpose. Although it re-implements the constructor and every geometry-bearing
+    property (its boundary is a ``GeneralizedFourierZernikeRZToroidalVolume`` rather
+    than a ``FourierRZToroidalSurface``), it reuses ``Equilibrium``'s coordinate and
+    solver machinery unchanged -- ``map_coordinates``, ``is_nested``, ``to_sfl``,
+    ``solve``, ``optimize``, ``perturb``, ``from_near_axis`` -- and, crucially, the
+    whole DESC ecosystem (objectives, plotting, normalization, ``get_transforms`` /
+    ``get_params`` / ``get_profiles``, and the ``data_index`` compute registry)
+    dispatches on ``isinstance(obj, Equilibrium)`` and on the parameterization
+    string. Keeping the subclass lets a ``SharpEquilibrium`` substitute for an
+    ``Equilibrium`` everywhere those checks appear (there are dozens) with no
+    duplication. A plain ``Equilibrium`` is really the special case (``beta=pi``,
+    no sharp modes), so the eventual clean design is a shared abstract
+    ``_Equilibrium`` base from which both classes derive; that refactor touches the
+    entire 2600-line ``Equilibrium`` and every ``isinstance`` site, so it is left as
+    dedicated future work rather than bundled here. The one method that genuinely
+    does not carry over, ``get_surface_at``, raises ``NotImplementedError``.
+
     """
 
     _io_attrs_ = [
@@ -2987,12 +3007,12 @@ class SharpEquilibrium(Equilibrium):
         "_R_lmn",
         "_Z_lmn",
         "_L_lmn",
-        "m_b",
-        "n_b",
-        "β",
-        "sharp_type",
-        "fix_quadrature",
-        "quasiconformal",
+        "_m_b",
+        "_n_b",
+        "_β",
+        "_sharp_type",
+        "_fix_quadrature",
+        "_quasiconformal",
         "_R_basis",
         "_Z_basis",
         "_L_basis",
@@ -3022,12 +3042,12 @@ class SharpEquilibrium(Equilibrium):
         "_L_shp",
         "_M_shp",
         "_N_shp",
-        "m_b",
-        "n_b",
-        "β",
-        "sharp_type",
-        "fix_quadrature",
-        "quasiconformal",
+        "_m_b",
+        "_n_b",
+        "_β",
+        "_sharp_type",
+        "_fix_quadrature",
+        "_quasiconformal",
         "_L_grid",
         "_M_grid",
         "_N_grid",
@@ -3520,8 +3540,9 @@ class SharpEquilibrium(Equilibrium):
             if hasattr(p, "change_resolution"):
                 p.change_resolution(max(p.basis.L, self.L))
 
-        self.surface.change_resolution(
-            self.L, self.M, self.N, NFP=self.NFP, sym=self.sym
+        self.volume.change_resolution(
+            self.L, self.M, self.N, self.L_shp, self.M_shp, self.N_shp,
+            NFP=self.NFP, sym=self.sym,
         )
         self.axis.change_resolution(self.N, NFP=self.NFP, sym=self.sym)
 
@@ -4235,50 +4256,57 @@ class SharpEquilibrium(Equilibrium):
     def Zb_lmn(self, Zb_lmn):
         self.volume.Z_lmn = Zb_lmn
 
-    # @optimizable_parameter
-    # @property
-    # def I(self):  # noqa: E743
-    #     """float: Net toroidal current on the sheet current at the LCFS."""
-    #     return self.volume.I if hasattr(self.volume, "I") else np.empty(0)
+    # Net-current / sheet-current parameters (I, G, Phi_mn) live on the LCFS of a
+    # free-boundary Equilibrium.surface. A SharpEquilibrium is a fixed-boundary
+    # object whose boundary is a GeneralizedFourierZernikeRZToroidalVolume with no
+    # sheet current, so these are always empty. We still define them (returning
+    # empty arrays) so that Optimizable.params_dict and the generic compute /
+    # map_coordinates / perturb machinery, which iterate over these parameters,
+    # do not fall through to Equilibrium's surface-based versions.
+    @optimizable_parameter
+    @property
+    def I(self):  # noqa: E743
+        """float: Net toroidal current on the sheet current at the LCFS."""
+        return self.volume.I if hasattr(self.volume, "I") else np.empty(0)
 
-    # @I.setter
-    # def I(self, new):  # noqa: E743
-    #     errorif(
-    #         not hasattr(self.volume, "I"),
-    #         ValueError,
-    #         "Attempt to set I on an equilibrium without sheet current",
-    #     )
-    #     self.volume.I = new
+    @I.setter
+    def I(self, new):  # noqa: E743
+        errorif(
+            not hasattr(self.volume, "I"),
+            ValueError,
+            "Attempt to set I on a SharpEquilibrium without sheet current",
+        )
+        self.volume.I = new
 
-    # @optimizable_parameter
-    # @property
-    # def G(self):
-    #     """float: Net poloidal current on the sheet current at the LCFS."""
-    #     return self.volume.G if hasattr(self.volume, "G") else np.empty(0)
+    @optimizable_parameter
+    @property
+    def G(self):
+        """float: Net poloidal current on the sheet current at the LCFS."""
+        return self.volume.G if hasattr(self.volume, "G") else np.empty(0)
 
-    # @G.setter
-    # def G(self, new):
-    #     errorif(
-    #         not hasattr(self.volume, "G"),
-    #         ValueError,
-    #         "Attempt to set G on an equilibrium without sheet current",
-    #     )
-    #     self.volume.G = new
+    @G.setter
+    def G(self, new):
+        errorif(
+            not hasattr(self.volume, "G"),
+            ValueError,
+            "Attempt to set G on a SharpEquilibrium without sheet current",
+        )
+        self.volume.G = new
 
-    # @optimizable_parameter
-    # @property
-    # def Phi_mn(self):
-    #     """ndarray: coeffs of single-valued part of surface current potential."""
-    #     return self.volume.Phi_mn if hasattr(self.volume, "Phi_mn") else np.empty(0)
+    @optimizable_parameter
+    @property
+    def Phi_mn(self):
+        """ndarray: coeffs of single-valued part of surface current potential."""
+        return self.volume.Phi_mn if hasattr(self.volume, "Phi_mn") else np.empty(0)
 
-    # @Phi_mn.setter
-    # def Phi_mn(self, new):
-    #     errorif(
-    #         not hasattr(self.surface, "Phi_mn"),
-    #         ValueError,
-    #         "Attempt to set Phi_mn on an equilibrium without sheet current",
-    #     )
-    #     self.surface.Phi_mn = new
+    @Phi_mn.setter
+    def Phi_mn(self, new):
+        errorif(
+            not hasattr(self.volume, "Phi_mn"),
+            ValueError,
+            "Attempt to set Phi_mn on a SharpEquilibrium without sheet current",
+        )
+        self.volume.Phi_mn = new
 
     @optimizable_parameter
     @property
@@ -4668,5 +4696,15 @@ class SharpEquilibrium(Equilibrium):
             "N_grid": self.N_grid,
         }
     
-    def get_surface_at(**kwargs):
-        raise NotImplementedError("Not implemented in this class!")
+    def get_surface_at(self, *args, **kwargs):
+        """Not available: a SharpEquilibrium's boundary is a VolumeRegion.
+
+        The last closed flux surface is not represented as a standard
+        ``FourierRZToroidalSurface`` (it may have sharp corners), so use
+        ``self.volume`` instead.
+        """
+        raise NotImplementedError(
+            "get_surface_at is not implemented for SharpEquilibrium; "
+            "its boundary is a GeneralizedFourierZernikeRZToroidalVolume "
+            "(see self.volume)."
+        )
