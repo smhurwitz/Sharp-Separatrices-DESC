@@ -391,7 +391,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         NFP=1,
         m_b=1,
         n_b=1,
-        β=0.5*np.pi,
+        β=0.75*np.pi,
         sharp_type="lens",
         fix_quadrature=False,
         quasiconformal=False,
