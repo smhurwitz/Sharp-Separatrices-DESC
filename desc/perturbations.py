@@ -61,6 +61,28 @@ def get_deltas(things1, things2):  # noqa: C901
             if not jnp.allclose(s2.Z_lmn, s1.Z_lmn):
                 deltas["Zb_lmn"] = s2.Z_lmn - s1.Z_lmn
 
+    if "volume" in things1:
+        # SharpEquilibrium boundary: a GeneralizedFourierZernikeRZToroidalVolume.
+        # Rb_lmn / Zb_lmn are the volume's coefficients in the generalized basis, so
+        # the deltas are computed just like the surface case but with the volume's
+        # (L, M, N, L_shp, M_shp, N_shp) change_resolution signature.
+        v1 = things1.pop("volume")
+        v2 = things2.pop("volume")
+        if v1 is not None and v2 is not None:
+            v1 = v1.copy()
+            v2 = v2.copy()
+            warnif(
+                v1.M > v2.M or v1.N > v2.N or v1.M_shp > v2.M_shp,
+                msg="The target volume" + msg,
+            )
+            v1.change_resolution(
+                v2.L, v2.M, v2.N, v2.L_shp, v2.M_shp, v2.N_shp
+            )
+            if not jnp.allclose(v2.R_lmn, v1.R_lmn):
+                deltas["Rb_lmn"] = v2.R_lmn - v1.R_lmn
+            if not jnp.allclose(v2.Z_lmn, v1.Z_lmn):
+                deltas["Zb_lmn"] = v2.Z_lmn - v1.Z_lmn
+
     if "axis" in things1:
         a1 = things1.pop("axis")
         a2 = things2.pop("axis")
@@ -247,13 +269,18 @@ def perturb(  # noqa: C901
         con = get_instance(constraints, BoundaryRSelfConsistency)
         A = con.jac_unscaled(xz)[0]["R_lmn"]
         Ainv = jnp.linalg.pinv(A)
-        dc = deltas["Rb_lmn"]
+        # Boundary self-consistency is A @ R_lmn - B @ Rb_lmn = 0, so a change in the
+        # boundary coefficients maps to the interior via Ainv @ (B @ dRb). B is the
+        # identity for a standard Equilibrium (Rb_lmn already has one entry per
+        # constraint) and the selection matrix for a SharpEquilibrium (Rb_lmn is the
+        # full generalized volume vector).
+        dc = con._B @ deltas["Rb_lmn"]
         tangents += jnp.eye(eq.dim_x)[:, eq.x_idx["R_lmn"]] @ Ainv @ dc
     if "Zb_lmn" in deltas.keys():
         con = get_instance(constraints, BoundaryZSelfConsistency)
         A = con.jac_unscaled(xz)[0]["Z_lmn"]
         Ainv = jnp.linalg.pinv(A)
-        dc = deltas["Zb_lmn"]
+        dc = con._B @ deltas["Zb_lmn"]
         tangents += jnp.eye(eq.dim_x)[:, eq.x_idx["Z_lmn"]] @ Ainv @ dc
     if "Ra_n" in deltas.keys():
         con = get_instance(constraints, AxisRSelfConsistency)

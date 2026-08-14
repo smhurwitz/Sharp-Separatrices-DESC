@@ -293,6 +293,87 @@ def test_sharp_equilibrium_fixed_boundary_solve():
 
 
 @pytest.mark.unit
+def test_sharp_equilibrium_perturb_boundary():
+    """Perturbing a boundary coefficient moves the LCFS by the requested amount."""
+    from desc.objectives import (
+        get_equilibrium_objective,
+        get_fixed_boundary_constraints,
+    )
+    from desc.profiles import PowerSeriesProfile
+
+    vol = GeneralizedFourierZernikeRZToroidalVolume(
+        L=2, M=2, N=0, L_shp=1, M_shp=1, N_shp=0, m_b=3, n_b=3, NFP=1
+    )
+    vol.set_coeffs(l=-1, m=1, n=0, R=0.2)
+    seq = SharpEquilibrium(
+        volume=vol, L=2, M=2, N=0, L_shp=1, M_shp=1, N_shp=0,
+        pressure=PowerSeriesProfile([1e3, 0, -1e3]),
+        iota=PowerSeriesProfile([1.0, 0, 0.5]),
+        ensure_nested=True, check_orientation=True,
+    )
+    obj = get_equilibrium_objective(eq=seq)
+    cons = get_fixed_boundary_constraints(eq=seq)
+    delta = np.zeros_like(np.asarray(seq.Rb_lmn))
+    delta[seq.R_basis.get_idx(1, 1, 0)] = 0.05
+    seq2 = seq.perturb(
+        objective=obj, constraints=cons, deltas={"Rb_lmn": delta},
+        order=1, copy=True, verbose=0,
+    )
+    th = np.linspace(0, 2 * np.pi, 100)
+    nod = np.column_stack([np.ones_like(th), th, np.zeros_like(th)])
+    R0 = np.asarray(seq.R_basis.evaluate(nod)) @ np.asarray(seq.R_lmn)
+    R1 = np.asarray(seq2.R_basis.evaluate(nod)) @ np.asarray(seq2.R_lmn)
+    assert np.isclose(np.max(np.abs(R1 - R0)), 0.05, atol=1e-3)
+
+
+@pytest.mark.unit
+def test_sharp_equilibrium_continuation():
+    """solve_continuation_automatic runs on a SharpEquilibrium (tokamak and 3D),
+    preserving the boundary through the resolution/pressure/shaping ramps."""
+    from desc.continuation import solve_continuation_automatic
+    from desc.profiles import PowerSeriesProfile
+
+    # --- axisymmetric (exercises _solve_axisym + _add_pressure) ---
+    vol = GeneralizedFourierZernikeRZToroidalVolume(
+        L=2, M=2, N=0, L_shp=1, M_shp=1, N_shp=0, m_b=3, n_b=3, NFP=1
+    )
+    vol.set_coeffs(l=-1, m=1, n=0, R=0.2)
+    eq = SharpEquilibrium(
+        volume=vol, L=2, M=2, N=0, L_shp=1, M_shp=1, N_shp=0,
+        pressure=PowerSeriesProfile([1e3, 0, -1e3]),
+        iota=PowerSeriesProfile([1.0, 0, 0.5]),
+        ensure_nested=True, check_orientation=True,
+    )
+    th = np.linspace(0, 2 * np.pi, 80)
+    nod = np.column_stack([np.ones_like(th), th, np.zeros_like(th)])
+    Rb0 = np.asarray(eq.R_basis.evaluate(nod)) @ np.asarray(eq.R_lmn)
+    fam = solve_continuation_automatic(eq, verbose=0, mres_step=1)
+    assert isinstance(fam[-1], SharpEquilibrium)
+    Rb1 = np.asarray(fam[-1].R_basis.evaluate(nod)) @ np.asarray(fam[-1].R_lmn)
+    np.testing.assert_allclose(Rb1, Rb0, atol=1e-10)
+
+    # --- 3D (exercises _add_shaping: N ramps 0 -> 1) ---
+    vol3 = GeneralizedFourierZernikeRZToroidalVolume(
+        L=2, M=2, N=1, L_shp=1, M_shp=1, N_shp=1, m_b=3, n_b=3, NFP=3, sym=True
+    )
+    vol3.set_coeffs(l=-1, m=1, n=0, R=0.15)
+    vol3.set_coeffs(l=1, m=1, n=1, R=0.3)
+    eq3 = SharpEquilibrium(
+        volume=vol3, L=2, M=2, N=1, L_shp=1, M_shp=1, N_shp=1,
+        pressure=PowerSeriesProfile([1e3, 0, -1e3]),
+        iota=PowerSeriesProfile([0.8, 0, 0.4]),
+        ensure_nested=True, check_orientation=True,
+    )
+    zeta = 0.3
+    nod3 = np.column_stack([np.ones_like(th), th, zeta * np.ones_like(th)])
+    R30 = np.asarray(eq3.R_basis.evaluate(nod3)) @ np.asarray(eq3.R_lmn)
+    fam3 = solve_continuation_automatic(eq3, verbose=0, mres_step=1)
+    assert fam3[-1].N == 1
+    R31 = np.asarray(fam3[-1].R_basis.evaluate(nod3)) @ np.asarray(fam3[-1].R_lmn)
+    np.testing.assert_allclose(R31, R30, atol=1e-10)
+
+
+@pytest.mark.unit
 def test_sharp_equilibrium_plotting_smoke():
     """plot_surfaces and plot_boundary run on a SharpEquilibrium."""
     import matplotlib

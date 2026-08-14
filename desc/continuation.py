@@ -6,7 +6,7 @@ import warnings
 import numpy as np
 from termcolor import colored
 
-from desc.equilibrium import EquilibriaFamily, Equilibrium
+from desc.equilibrium import EquilibriaFamily, Equilibrium, SharpEquilibrium
 from desc.objectives import get_equilibrium_objective, get_fixed_boundary_constraints
 from desc.optimize import Optimizer
 from desc.perturbations import get_deltas
@@ -15,6 +15,90 @@ from desc.utils import Timer, errorif
 MIN_MRES_STEP = 1
 MIN_PRES_STEP = 0.1
 MIN_BDRY_STEP = 0.05
+
+
+# --- Helpers so the continuation machinery works for both a standard Equilibrium
+# (boundary = FourierRZToroidalSurface) and a SharpEquilibrium (boundary =
+# GeneralizedFourierZernikeRZToroidalVolume). The three differences are: which
+# object is the boundary, the change_resolution signature (the volume/eq carry the
+# extra sharp resolution L_shp/M_shp/N_shp), and the get_deltas key.
+
+
+def _is_sharp(eq):
+    """Whether eq is a SharpEquilibrium (generalized-basis boundary)."""
+    return isinstance(eq, SharpEquilibrium)
+
+
+def _boundary(eq):
+    """The boundary object: eq.volume for sharp, eq.surface otherwise."""
+    return eq.volume if _is_sharp(eq) else eq.surface
+
+
+def _boundary_key(eq):
+    """The get_deltas dict key for this equilibrium's boundary type."""
+    return "volume" if _is_sharp(eq) else "surface"
+
+
+def _change_boundary_resolution(bdry, L, M, N, eq):
+    """Change a boundary's resolution, sharp or standard.
+
+    The sharp poloidal/radial resolution (L_shp, M_shp) is held at the target's,
+    and N_shp follows N (the volume enforces N_shp == N).
+    """
+    if _is_sharp(eq):
+        bdry.change_resolution(L, M, N, eq.L_shp, eq.M_shp, N)
+    else:
+        bdry.change_resolution(L, M, N)
+
+
+def _change_eq_resolution(eqi, L, M, N, L_grid, M_grid, N_grid, eq):
+    """Change an equilibrium's resolution using keyword args (sharp or standard).
+
+    Positional change_resolution differs between the two classes (SharpEquilibrium
+    has L_shp/M_shp/N_shp before the grids), so always pass keywords.
+    """
+    kwargs = dict(
+        L=L, M=M, N=N, L_grid=L_grid, M_grid=M_grid, N_grid=N_grid
+    )
+    if _is_sharp(eq):
+        kwargs.update(L_shp=eq.L_shp, M_shp=eq.M_shp, N_shp=N)
+    eqi.change_resolution(**kwargs)
+
+
+def _make_intermediate_eq(eq, L, M, N, L_grid, M_grid, N_grid, pressure, boundary):
+    """Build a fresh intermediate equilibrium of the same type as ``eq``."""
+    common = dict(
+        Psi=eq.Psi,
+        NFP=eq.NFP,
+        L=L,
+        M=M,
+        N=N,
+        L_grid=L_grid,
+        M_grid=M_grid,
+        N_grid=N_grid,
+        pressure=pressure,
+        iota=copy.copy(eq.iota),  # copy.copy since may be None
+        current=copy.copy(eq.current),
+        sym=eq.sym,
+        spectral_indexing=eq.spectral_indexing,
+    )
+    if _is_sharp(eq):
+        return SharpEquilibrium(
+            L_shp=eq.L_shp,
+            M_shp=eq.M_shp,
+            N_shp=N,
+            m_b=eq.m_b,
+            n_b=eq.n_b,
+            β=eq.β,
+            sharp_type=eq.sharp_type,
+            fix_quadrature=eq.fix_quadrature,
+            quasiconformal=eq.quasiconformal,
+            volume=boundary,
+            ensure_nested=False,
+            check_orientation=False,
+            **common,
+        )
+    return Equilibrium(surface=boundary, **common)
 
 
 def _solve_axisym(
@@ -34,7 +118,7 @@ def _solve_axisym(
     """Solve initial axisymmetric case with adaptive step sizing."""
     timer = Timer()
 
-    surface = eq.surface
+    boundary = _boundary(eq)
     pressure = eq.pressure
     L, M, L_grid, M_grid = eq.L, eq.M, eq.L_grid, eq.M_grid
     spectral_indexing = eq.spectral_indexing
@@ -54,27 +138,22 @@ def _solve_axisym(
     )
     deltas = {}
 
-    surf_axisym = surface.copy()
+    bdry_axisym = boundary.copy()
     pres_vac = pressure.copy()
-    surf_axisym.change_resolution(L, M, Ni)
+    _change_boundary_resolution(bdry_axisym, L, M, Ni, eq)
     # start with zero pressure
     pres_vac.params *= 0
 
-    eqi = Equilibrium(
-        Psi=eq.Psi,
-        NFP=eq.NFP,
-        L=Li,
-        M=Mi,
-        N=Ni,
-        L_grid=L_gridi,
-        M_grid=M_gridi,
-        N_grid=N_gridi,
-        pressure=pres_vac.copy(),
-        iota=copy.copy(eq.iota),  # have to use copy.copy here since may be None
-        current=copy.copy(eq.current),
-        surface=surf_axisym.copy(),
-        sym=eq.sym,
-        spectral_indexing=spectral_indexing,
+    eqi = _make_intermediate_eq(
+        eq,
+        Li,
+        Mi,
+        Ni,
+        L_gridi,
+        M_gridi,
+        N_gridi,
+        pres_vac.copy(),
+        bdry_axisym.copy(),
     )
 
     if not isinstance(optimizer, Optimizer):
@@ -94,13 +173,13 @@ def _solve_axisym(
             Li = int(np.ceil(L / M * Mi))
             L_gridi = np.ceil(L_grid / L * Li).astype(int)
             M_gridi = np.ceil(M_grid / M * Mi).astype(int)
-            eqi.change_resolution(Li, Mi, Ni, L_gridi, M_gridi, N_gridi)
+            _change_eq_resolution(eqi, Li, Mi, Ni, L_gridi, M_gridi, N_gridi, eq)
 
-            surf_i = eqi.surface
-            surf_i2 = surface.copy()
-            surf_i2.change_resolution(Li, Mi, Ni)
-            deltas = get_deltas({"surface": surf_i}, {"surface": surf_i2})
-            surf_i = surf_i2
+            bdry_i = _boundary(eqi)
+            bdry_i2 = boundary.copy()
+            _change_boundary_resolution(bdry_i2, Li, Mi, Ni, eq)
+            key = _boundary_key(eq)
+            deltas = get_deltas({key: bdry_i}, {key: bdry_i2})
 
         constraints_i = get_fixed_boundary_constraints(eq=eqi)
         objective_i = get_equilibrium_objective(
@@ -240,7 +319,7 @@ def _add_pressure(
                 ii,
                 None,
                 eqi,
-                _get_ratio(eqi.surface, eq.surface),
+                _get_ratio(_boundary(eqi), _boundary(eq)),
                 pres_ratio,
                 1,
                 pert_order,
@@ -341,21 +420,26 @@ def _add_shaping(
     eqi = eqfam[-1].copy()
     eqfam_temp = eqfam.copy()
     # make sure its at full resolution
-    eqi.change_resolution(eq.L, eq.M, eq.N, eq.L_grid, eq.M_grid, eq.N_grid)
+    _change_eq_resolution(
+        eqi, eq.L, eq.M, eq.N, eq.L_grid, eq.M_grid, eq.N_grid, eq
+    )
 
     bdry_steps = 0 if eq.N == 0 or bdry_step == 0 else int(np.ceil(1 / bdry_step))
     bdry_ratio = 0 if eq.N else 1
 
-    surf_axisym = eq.surface.copy()
-    surf_axisym.change_resolution(eq.L, eq.M, 0)
-    surf_axisym.change_resolution(eq.L, eq.M, eq.N)
+    # axisymmetric projection of the target boundary (zero the N!=0 modes)
+    bdry_axisym = _boundary(eq).copy()
+    _change_boundary_resolution(bdry_axisym, eq.L, eq.M, 0, eq)
+    _change_boundary_resolution(bdry_axisym, eq.L, eq.M, eq.N, eq)
+    bdry_target = _boundary(eq)
+    key = _boundary_key(eq)
 
     ii = len(eqfam_temp)
     stop = False
     while ii - len(eqfam_temp) < bdry_steps and not stop:
         timer.start("Iteration {} total".format(ii + 1))
         # increase shaping
-        deltas = get_deltas({"surface": surf_axisym}, {"surface": eq.surface})
+        deltas = get_deltas({key: bdry_axisym}, {key: bdry_target})
         if "Rb_lmn" in deltas:
             deltas["Rb_lmn"] *= bdry_step
         if "Zb_lmn" in deltas:

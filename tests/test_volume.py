@@ -167,6 +167,47 @@ class TestGeneralizedZernikeRZToroidalVolume:
         np.testing.assert_allclose(Z, [-1])
 
     @pytest.mark.unit
+    def test_sym_auto_detection(self):
+        """Stellarator symmetry auto-detection uses (m, n) parity, not l.
+
+        Regression for a bug where the sym="auto" heuristic compared the radial
+        index l (column 0, always negative for sharp modes) against m (column 1)
+        instead of comparing the poloidal m (column 1) against the toroidal n
+        (column 2). That misclassified an up-down-symmetric boundary built from
+        sharp modes as asymmetric, so the equilibrium silently solved with
+        sym=False and developed spurious up-down asymmetry.
+        """
+        # Up-down symmetric lens boundary made purely of sharp modes
+        # (R has an m=+1 sharp mode, Z has an m=-1 sharp mode). Must be sym=True.
+        vol = GeneralizedFourierZernikeRZToroidalVolume(
+            R_lmn=np.array([10.0, 1.0]),
+            modes_R=np.array([[0, 0, 0], [-1, 1, 0]]),
+            Z_lmn=np.array([0.0, -1.0]),
+            modes_Z=np.array([[0, 0, 0], [-1, -1, 0]]),
+            L=2, M=2, N=0, L_shp=2, M_shp=2, N_shp=0,
+            m_b=2, n_b=2, sharp_type="lens",
+        )
+        assert vol.sym is True
+
+        # Forcing sym=True must not truncate/alter the (already symmetric) modes.
+        R, Z = vol.get_coeffs(-1, 1, 0)
+        np.testing.assert_allclose(R, [1.0])
+        R, Z = vol.get_coeffs(-1, -1, 0)
+        np.testing.assert_allclose(Z, [-1.0])
+
+        # A genuinely up-down asymmetric boundary (extra Z sharp mode with m=+1,
+        # a cos-type contribution to Z) must still be detected as sym=False.
+        vol_asym = GeneralizedFourierZernikeRZToroidalVolume(
+            R_lmn=np.array([10.0, 1.0]),
+            modes_R=np.array([[0, 0, 0], [-1, 1, 0]]),
+            Z_lmn=np.array([0.0, -1.0, 0.3]),
+            modes_Z=np.array([[0, 0, 0], [-1, -1, 0], [-1, 1, 0]]),
+            L=2, M=2, N=0, L_shp=2, M_shp=2, N_shp=0,
+            m_b=2, n_b=2, sharp_type="lens",
+        )
+        assert vol_asym.sym is False
+
+    @pytest.mark.unit
     def test_initialization_custom_params(self):
         """Test initialization with custom parameters."""
         R_lmn = np.array([5, 2, 1, 0.3])

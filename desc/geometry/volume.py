@@ -106,10 +106,17 @@ class FourierZernikeRZToroidalVolume(Volume):
         self._NFP = NFP
 
         if sym == "auto":
+            # Stellarator symmetry is a parity of the (theta, zeta) angular
+            # dependence only: R is cos-symmetric where sign(m) == sign(n) and
+            # Z is sin-symmetric where sign(m) != sign(n) (with sign(0) == 1).
+            # The radial index l (column 0, negative for sharp modes) does not
+            # enter, so compare the poloidal m (column 1) and toroidal n
+            # (column 2) columns -- matching FourierRZToroidalSurface, whose
+            # 2-column [m, n] modes make the same comparison on columns 0 and 1.
             if np.all(
-                R_lmn[np.where(sign(modes_R[:, 0]) != sign(modes_R[:, 1]))] == 0
+                R_lmn[np.where(sign(modes_R[:, 1]) != sign(modes_R[:, 2]))] == 0
             ) and np.all(
-                Z_lmn[np.where(sign(modes_Z[:, 0]) == sign(modes_Z[:, 1]))] == 0
+                Z_lmn[np.where(sign(modes_Z[:, 1]) == sign(modes_Z[:, 2]))] == 0
             ):
                 sym = True
             else:
@@ -465,10 +472,17 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         self._quasiconformal = bool(quasiconformal)
 
         if sym == "auto":
+            # Stellarator symmetry is a parity of the (theta, zeta) angular
+            # dependence only: R is cos-symmetric where sign(m) == sign(n) and
+            # Z is sin-symmetric where sign(m) != sign(n) (with sign(0) == 1).
+            # The radial index l (column 0, negative for sharp modes) does not
+            # enter, so compare the poloidal m (column 1) and toroidal n
+            # (column 2) columns -- matching FourierRZToroidalSurface, whose
+            # 2-column [m, n] modes make the same comparison on columns 0 and 1.
             if np.all(
-                R_lmn[np.where(sign(modes_R[:, 0]) != sign(modes_R[:, 1]))] == 0
+                R_lmn[np.where(sign(modes_R[:, 1]) != sign(modes_R[:, 2]))] == 0
             ) and np.all(
-                Z_lmn[np.where(sign(modes_Z[:, 0]) == sign(modes_Z[:, 1]))] == 0
+                Z_lmn[np.where(sign(modes_Z[:, 1]) == sign(modes_Z[:, 2]))] == 0
             ):
                 sym = True
             else:
@@ -524,6 +538,16 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     def n_b(self):
         """Toroidal mode number associated with the boundary of the volume."""
         return self._n_b
+
+    @property
+    def β(self):
+        """float: Angle of the corners for the sharp (lens) mapping."""
+        return self._R_basis.shp_basis.β
+
+    @property
+    def sharp_type(self):
+        """str: Method for the sharp mapping, 'lens' or 'hypergeometric'."""
+        return self._R_basis.shp_basis.sharp_type
 
     @property
     def fix_quadrature(self):

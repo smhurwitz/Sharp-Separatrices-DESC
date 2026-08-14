@@ -3071,8 +3071,8 @@ class SharpEquilibrium(Equilibrium):
         N_shp=None,
         m_b=None,
         n_b=None,
-        β=0.75*np.pi,
-        sharp_type="lens",
+        β=None,
+        sharp_type=None,
         fix_quadrature=None,
         quasiconformal=None,
         L_grid=None,
@@ -3196,19 +3196,27 @@ class SharpEquilibrium(Equilibrium):
         # resolution
         m_b = check_nonnegint(m_b, "m_b")
         n_b = check_nonnegint(n_b, "n_b")
-        assert (β > 0 and β <= np.pi), "β must be between 0 and π"
-        assert (sharp_type == "lens" or sharp_type == "hypergeometric"), "sharp_type must be lens or hypergeometric"
+        # β, sharp_type, m_b, n_b, fix_quadrature and quasiconformal default from the
+        # volume so that, when a volume is supplied, the equilibrium's generalized
+        # basis matches it exactly. Otherwise the same boundary coefficients would
+        # describe a different shape (different corner angle / mapping) and the
+        # equilibrium boundary would silently disagree with the volume it was built
+        # from once sharp modes are populated.
         self._m_b = int(setdefault(m_b, self._volume.m_b))
         self._n_b = int(setdefault(n_b, self._volume.n_b))
-        self._β = β
-        self._sharp_type = sharp_type
+        self._β = setdefault(β, self._volume.β)
+        self._sharp_type = setdefault(sharp_type, self._volume.sharp_type)
+        assert (self._β > 0 and self._β <= np.pi), "β must be between 0 and π"
+        assert self._sharp_type in ("lens", "hypergeometric"), (
+            "sharp_type must be lens or hypergeometric"
+        )
         self._fix_quadrature = bool(
             setdefault(fix_quadrature, getattr(self._volume, "fix_quadrature", False))
         )
         self._quasiconformal = bool(
             setdefault(quasiconformal, getattr(self._volume, "quasiconformal", False))
         )
-        if self._quasiconformal and sharp_type != "lens":
+        if self._quasiconformal and self._sharp_type != "lens":
             raise ValueError(
                 "quasiconformal=True is only defined for sharp_type='lens'."
             )
