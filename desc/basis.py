@@ -1977,7 +1977,7 @@ class SharpFourierZernikeBasis(_Basis):
         self._M = check_nonnegint(M, "M", False)
         self._N = check_nonnegint(N, "N", False)
         self._NFP = check_posint(NFP, "NFP", False)
-        self._m_b = check_posint(m_b, "m_b", False)
+        self._m_b = check_nonnegint(m_b, "m_b", False)
         assert m_b % NFP == 0, "m_b must be a multiple of NFP"
         self._n_b = check_posint(n_b, "n_b", False)
         assert β > 0 and β <= np.pi, "β must be between 0 and pi"

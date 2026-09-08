@@ -458,7 +458,7 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
         N_shp = check_nonnegint(N_shp, "Nsh")
         NFP = check_posint(NFP, "NFP", False)
         m_b = check_posint(m_b, "m_b", False)
-        n_b = check_posint(n_b, "m_b", False)
+        n_b = check_nonnegint(n_b, "n_b", False)
         self._L = setdefault(L, max(LR, LZ))
         self._M = setdefault(M, max(MR, MZ))
         self._N = setdefault(N, max(NR, NZ, NR_sharp, NZ_sharp))
