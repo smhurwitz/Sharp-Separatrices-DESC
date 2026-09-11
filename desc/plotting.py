@@ -142,6 +142,51 @@ def _set_tight_layout(fig):
         fig.set_tight_layout(True)
 
 
+def _log_levels(data, floor=-16):
+    """Decade levels spanning ``data``'s (already-positive) range, for log plots.
+
+    Guards against ``data`` being identically zero (or otherwise having no
+    finite, positive log10) on the whole grid -- e.g. a field component that
+    vanishes exactly everywhere for a particular equilibrium (B_theta when
+    iota=0, say). Naively doing ``ceil(nanmax(log10(data))).astype(int)`` in
+    that case casts -inf to int, which over/underflows to a huge magnitude
+    int (platform dependent) rather than raising, and the resulting
+    ``logmax - logmin + 1`` passed to ``np.logspace`` as the sample count is
+    then wildly negative, which *does* raise (``ValueError: Number of
+    samples...``). Clamping both ends before that arithmetic avoids the whole
+    failure mode, and falls back to a single decade at ``floor`` when there is
+    no finite level at all.
+    """
+    with np.errstate(divide="ignore"):
+        log10 = np.log10(data)
+    finite = log10[np.isfinite(log10)]
+    if finite.size == 0:
+        return floor, floor + 1
+    logmin = max(int(np.floor(np.min(finite))), floor)
+    logmax = max(int(np.ceil(np.max(finite))), logmin + 1)
+    return logmin, logmax
+
+
+def _linear_levels(data, n=100):
+    """Levels spanning ``data``'s range, for a linear-scale contour plot.
+
+    Guards against ``data`` being constant to within floating-point noise --
+    e.g. an equilibrium's untouched initial guess has a trivial placeholder
+    toroidal field before ``solve()`` -- where ``linspace(min, max, n))`` can
+    degenerate to fewer than ``n`` distinct, *non-monotonic* values (rounding
+    noise in a range many orders of magnitude below the values themselves),
+    and ``contourf`` raises "Contour levels must be increasing" instead of
+    just rendering a single flat color. A plain ``lo == hi`` check catches
+    only the exactly-equal case, not this near-degenerate one, so compare the
+    range to the values' own magnitude instead.
+    """
+    lo, hi = np.nanmin(data), np.nanmax(data)
+    if not (hi - lo > 1e-10 * max(abs(lo), abs(hi), 1e-300)):
+        pad = max(abs(lo) * 1e-6, 1e-12)
+        lo, hi = lo - pad, hi + pad
+    return np.linspace(lo, hi, n)
+
+
 def _get_cmap(name, n=None):
     # TODO: update this when matplotlib min version >= 3.6.0
     # compat layer to deal with API changes in mpl 3.6.0
@@ -945,16 +990,13 @@ def plot_2d(  # noqa : C901
         ):
             contourf_kwargs["levels"] = kwargs.pop("levels", np.logspace(-6, 0, 7))
         else:
-            logmin = max(np.floor(np.nanmin(np.log10(data))).astype(int), -16)
-            logmax = np.ceil(np.nanmax(np.log10(data))).astype(int)
+            logmin, logmax = _log_levels(data)
             contourf_kwargs["levels"] = kwargs.pop(
                 "levels", np.logspace(logmin, logmax, logmax - logmin + 1)
             )
     else:
         contourf_kwargs["norm"] = matplotlib.colors.Normalize()
-        contourf_kwargs["levels"] = kwargs.pop(
-            "levels", np.linspace(np.nanmin(data), np.nanmax(data), 100)
-        )
+        contourf_kwargs["levels"] = kwargs.pop("levels", _linear_levels(data))
     contourf_kwargs["cmap"] = kwargs.pop("cmap", "jet")
     contourf_kwargs["extend"] = "both"
     title_fontsize = kwargs.pop("title_fontsize", None)
@@ -1755,16 +1797,13 @@ def plot_section(
         ):
             contourf_kwargs["levels"] = kwargs.pop("levels", np.logspace(-6, 0, 7))
         else:
-            logmin = max(np.floor(np.nanmin(np.log10(data))).astype(int), -16)
-            logmax = np.ceil(np.nanmax(np.log10(data))).astype(int)
+            logmin, logmax = _log_levels(data)
             contourf_kwargs["levels"] = kwargs.pop(
                 "levels", np.logspace(logmin, logmax, logmax - logmin + 1)
             )
     else:
         contourf_kwargs["norm"] = matplotlib.colors.Normalize()
-        contourf_kwargs["levels"] = kwargs.pop(
-            "levels", np.linspace(data.min(), data.max(), 100)
-        )
+        contourf_kwargs["levels"] = kwargs.pop("levels", _linear_levels(data))
     contourf_kwargs["cmap"] = kwargs.pop("cmap", "jet")
     contourf_kwargs["extend"] = "both"
     title_fontsize = kwargs.pop("title_fontsize", None)
@@ -3578,8 +3617,8 @@ def plot_grid(grid, return_data=False, **kwargs):
     -- any grid with sharp-corner-tracking node placement, see
     ``desc.grid.SharpEquilibriumGrid`` -- this instead plots one panel per toroidal
     plane in the grid (up to ``nzeta`` of them), and on each, marks the ``m_b``
-    boundary pre-vertices with a dashed radial line and a star at rho=1, at their
-    actual location ``theta = 2*pi*k/m_b + iota_b*zeta`` for that plane -- so you
+    boundary pre-vertices with a dashed radial line, at their actual location
+    ``theta = 2*pi*k/m_b + iota_b*zeta`` for that plane -- so you
     can see, plane by plane, that the grid nodes keep the same phase relative to
     the corners as zeta advances (see ``desc.grid.SharpEquilibriumGrid``'s
     docstring, and ``desc.basis.sharp_map``).
@@ -3733,15 +3772,6 @@ def plot_grid(grid, return_data=False, **kwargs):
             )
             for ct in corner_theta:
                 a.plot([ct, ct], [0, 1], color=corner_color, lw=1.2, ls="--", zorder=3)
-            a.scatter(
-                corner_theta,
-                np.ones_like(corner_theta),
-                marker="*",
-                s=90,
-                color=corner_color,
-                zorder=4,
-                label="pre-vertex" if i == 0 else None,
-            )
             plot_data["corner_theta"].append(corner_theta)
 
         a.set_ylim(0, 1)
@@ -3761,8 +3791,6 @@ def plot_grid(grid, return_data=False, **kwargs):
         ),
         fontsize=title_fontsize,
     )
-    if show_corners:
-        ax[0].legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize="small")
     _set_tight_layout(fig)
 
     if return_data:
