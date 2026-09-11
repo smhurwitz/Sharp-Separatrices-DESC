@@ -7,13 +7,17 @@ from scipy import optimize, special
 
 from desc.backend import fori_loop, jnp, put, repeat, take
 from desc.io import IOAble
-from desc.utils import Index, check_nonnegint, check_posint, errorif, setdefault
+from desc.utils import Index, check_nonnegint, check_posint, errorif, setdefault, warnif
 
 __all__ = [
     "Grid",
     "LinearGrid",
     "QuadratureGrid",
     "ConcentricGrid",
+    "SharpLinearGrid",
+    "SharpQuadratureGrid",
+    "SharpConcentricGrid",
+    "SharpEquilibriumGrid",
     "find_least_rational_surfaces",
     "find_most_rational_surfaces",
 ]
@@ -1770,6 +1774,668 @@ class ConcentricGrid(_Grid):
                 self._inverse_zeta_idx,
             ) = self._find_unique_inverse_nodes()
             self._weights = self._scale_weights()
+
+
+class _SharpGridMixin:
+    r"""Shared machinery for grids matched to an ``m_b``-fold sharp boundary.
+
+    A ``SharpEquilibrium`` boundary has ``m_b`` corners (pre-vertices) sitting at
+    the poloidal angle
+
+    .. math::
+
+        \\alpha_b(\\zeta) = \\theta - \\iota_b \\zeta \\equiv \\frac{2\\pi k}{m_b}
+        \\pmod{\\frac{2\\pi}{m_b}}, \\qquad \\iota_b = \\text{NFP}\\,\\frac{n_b}{m_b},
+
+    (see ``desc.basis.sharp_map`` and ``desc.basis._sharp_singularity_distances``).
+    Because the corners themselves rotate in theta with zeta at rate ``iota_b``, a
+    poloidal node pattern that is built once and reused unshifted at every toroidal
+    plane samples the corners at a different relative phase at each zeta. This mixin
+    adds two things on top of the grid classes it is combined with:
+
+    1. Corner tracking: poloidal nodes are rigidly rotated by ``iota_b * zeta`` at
+       each toroidal plane, so their phase relative to the corners is the same at
+       every zeta (see ``_rotate_theta``/``_finalize_sharp``).
+    2. Discrete rotational symmetry: the poloidal sample set (per ring, for
+       ``SharpConcentricGrid``) is required/rounded to be a multiple of ``m_b``, so
+       it is invariant, as a set, under rotation by the corners' own period
+       ``2*pi/m_b`` (see ``_round_up_to_multiple``/``_round_to_multiple``).
+
+    Neither of these is what keeps a node off of a corner -- that is a property of
+    the *radial* node placement (``SharpQuadratureGrid``/``SharpConcentricGrid``
+    never place a node at rho=0 or rho=1, so ``corner_dist = hypot(1-rho, dalpha)``
+    in ``_sharp_singularity_distances`` can never be exactly zero regardless of
+    theta). These two properties are instead about numerical fidelity: solving on a
+    grid that does not respect the boundary's own discrete symmetry can leak
+    spurious asymmetric error into an otherwise ``m_b``-fold-symmetric solution.
+    """
+
+    @staticmethod
+    def _validate_m_b_n_b(m_b, n_b, NFP):
+        m_b = check_posint(m_b, "m_b", False)
+        n_b = check_nonnegint(n_b, "n_b", False)
+        warnif(
+            m_b % NFP != 0,
+            UserWarning,
+            f"m_b={m_b} is not a multiple of NFP={NFP}. SharpFourierZernikeBasis "
+            "requires this (the corners would not repeat identically every field "
+            "period otherwise); expect inconsistencies if this grid is paired with "
+            "such a basis.",
+        )
+        return m_b, n_b
+
+    @property
+    def m_b(self):
+        """int: Poloidal mode number of the boundary (number of sharp corners)."""
+        return self._m_b
+
+    @property
+    def n_b(self):
+        """int: Toroidal mode number of the boundary, per field period."""
+        return self._n_b
+
+    @property
+    def iota_b(self):
+        """float: Boundary rotational transform, ι_b = NFP * n_b / m_b."""
+        return self.NFP * self._n_b / self._m_b
+
+    @staticmethod
+    def _round_to_multiple(n, m_b):
+        """Round a poloidal node count to the nearest positive multiple of m_b.
+
+        n_theta_corrected = m_b * argmin_k |n_theta - k*m_b|, clipped to at least
+        one full multiple (k=1) so the discrete m_b-fold symmetry is never lost to
+        a degenerate, empty ring.
+        """
+        k = max(int(round(n / m_b)), 1)
+        return m_b * k
+
+    @staticmethod
+    def _round_up_to_multiple(n, m_b):
+        """Smallest multiple of m_b that is >= n (and >= m_b).
+
+        Used for the equispaced tensor-product grids (SharpLinearGrid,
+        SharpQuadratureGrid), where the poloidal node count is tied to an exact
+        quadrature/Nyquist requirement (2*M+1 poloidal samples exactly resolve
+        Fourier modes up to order M): rounding *down* to the nearest multiple of
+        m_b, the way SharpConcentricGrid's per-ring count does, would silently
+        under-resolve the resolution the caller asked for, so this only ever
+        rounds up. Note 2*M+1 is odd for every integer M, so it is never a
+        multiple of an *even* m_b -- some rounding is unavoidable whenever m_b is
+        even, however M is chosen.
+        """
+        n = max(int(n), 1)
+        return m_b * -(-n // m_b)  # ceil(n / m_b) without float roundoff
+
+    @staticmethod
+    def _rotate_theta(nodes, iota_b):
+        """Rotate the poloidal coordinate of nodes by iota_b * zeta.
+
+        A rigid rotation of theta at fixed zeta does not change spacing (the
+        distance between neighboring poloidal nodes at that zeta is unchanged), so
+        this only ever needs to overwrite column 1 of nodes; spacing and weights,
+        computed from an already-fully-built grid, remain valid.
+        """
+        if iota_b == 0 or nodes.shape[0] == 0:
+            return nodes
+        nodes = np.asarray(nodes, dtype=float).copy()
+        nodes[:, 1] = np.mod(nodes[:, 1] + iota_b * nodes[:, 2], 2 * np.pi)
+        return nodes
+
+    def _finalize_sharp(self, is_meshgrid, fft_poloidal, fft_toroidal):
+        """Rotate a fully-built grid's poloidal nodes by iota_b * zeta.
+
+        Must be called only after node creation, symmetry truncation, sorting and
+        quadrature weights have all been finalized on the un-rotated pattern (i.e.
+        after the wrapped class's own ``__init__``/``change_resolution`` has fully
+        run): symmetry truncation assumes an un-rotated, single reference theta
+        pattern, and weights depend only on spacing, which a rigid per-zeta
+        rotation does not change.
+
+        Parameters
+        ----------
+        is_meshgrid, fft_poloidal, fft_toroidal : bool
+            What these flags would be, for this resolution, absent any corner
+            tracking (i.e. the wrapped class's own values). Cleared when the
+            rotation actually varies with zeta, since the grid is then no longer a
+            tensor product in (rho, theta, zeta).
+
+        """
+        iota_b = self.iota_b
+        nodes = self.nodes
+        non_uniform = (
+            iota_b != 0 and nodes.shape[0] > 0 and np.unique(nodes[:, 2]).size > 1
+        )
+        self._is_meshgrid = bool(is_meshgrid) and not non_uniform
+        self._fft_poloidal = bool(fft_poloidal) and not non_uniform
+        self._fft_toroidal = bool(fft_toroidal) and not non_uniform
+        self._can_fft2 = self._is_meshgrid and self._fft_poloidal and self._fft_toroidal
+        self._nodes = self._rotate_theta(nodes, iota_b)
+        self._axis = self._find_axis()
+        (
+            self._unique_rho_idx,
+            self._inverse_rho_idx,
+            self._unique_poloidal_idx,
+            self._inverse_poloidal_idx,
+            self._unique_zeta_idx,
+            self._inverse_zeta_idx,
+        ) = self._find_unique_inverse_nodes()
+
+
+class SharpLinearGrid(_SharpGridMixin, LinearGrid):
+    """LinearGrid whose nodes respect an m_b-fold sharp boundary.
+
+    Intended for plotting a ``SharpEquilibrium``: like ``LinearGrid``, nodes may
+    sit exactly at the magnetic axis (``axis=True``, default) and exactly at the
+    ``m_b`` boundary corners (``corners=True``, default). Both are fine for
+    evaluating R, Z or any other 0th-order (undifferentiated) quantity -- the sharp
+    map is finite and continuous everywhere, corners included. But *derivatives* of
+    the sharp basis, needed for |B|, current density, etc., are genuinely undefined
+    exactly at the axis and at the corners (see
+    ``desc.basis._check_sharp_derivative_nodes``), and DESC raises rather than
+    return a roundoff-dominated value there. Pass ``axis=False, corners=False`` for
+    a grid that evaluates such quantities everywhere.
+
+    Parameters
+    ----------
+    L, M, N : int, optional
+        Radial, poloidal and toroidal grid resolution.
+    NFP : int
+        Number of field periods (Default = 1).
+    sym : bool
+        Poloidal up/down symmetry. See ``LinearGrid``.
+    axis : bool
+        True to include a point at rho=0 (default), False for rho[0] = rho[1]/2.
+    endpoint : bool
+        If True, theta=0 and zeta=0 are duplicated after a full period. See
+        ``LinearGrid``.
+    rho, theta, zeta : int or ndarray of float, optional
+        See ``LinearGrid``. If ``theta`` is given explicitly (rather than derived
+        from ``M``), neither the ``m_b``-divisibility rounding nor ``corners=False``
+        can be applied to it, since doing so would silently alter the nodes the
+        caller asked for.
+    m_b : int
+        Poloidal mode number of the boundary (number of sharp corners).
+    n_b : int
+        Toroidal mode number of the boundary, per field period
+        (ι_b = NFP * n_b / m_b).
+    corners : bool
+        True (default) to place a poloidal node exactly on each pre-vertex, at
+        every toroidal plane. False to offset the poloidal nodes by half a grid
+        spacing so that none coincides with a corner -- needed to evaluate |B| or
+        other derivative-dependent quantities everywhere. Only applied when
+        ``theta`` is not given explicitly.
+
+    """
+
+    _io_attrs_ = LinearGrid._io_attrs_ + ["_m_b", "_n_b", "_corners"]
+    _static_attrs = _Grid._static_attrs + ["_m_b", "_n_b", "_corners"]
+
+    def __init__(
+        self,
+        L=None,
+        M=None,
+        N=None,
+        NFP=1,
+        sym=False,
+        axis=True,
+        endpoint=False,
+        rho=None,
+        theta=None,
+        zeta=None,
+        m_b=1,
+        n_b=0,
+        corners=True,
+    ):
+        self._m_b, self._n_b = self._validate_m_b_n_b(m_b, n_b, NFP)
+        self._corners = bool(corners)
+        super().__init__(
+            L=L,
+            M=M,
+            N=N,
+            NFP=NFP,
+            sym=sym,
+            axis=axis,
+            endpoint=endpoint,
+            rho=rho,
+            theta=theta,
+            zeta=zeta,
+        )
+
+    def _create_nodes(
+        self,
+        L=None,
+        M=None,
+        N=None,
+        NFP=1,
+        axis=True,
+        endpoint=False,
+        rho=1.0,
+        theta=0.0,
+        zeta=0.0,
+    ):
+        if M is not None:
+            # LinearGrid._create_nodes always lets M win over theta when both are
+            # given (see its own `if M is not None: theta = ...`); change_resolution
+            # in particular always passes M and never passes theta at all (so theta
+            # here is just its default sentinel, not necessarily None), so checking
+            # `theta is None` here would incorrectly skip this on every resolution
+            # change.
+            #
+            # 2*M+1 is odd for every integer M, so it can never itself be a
+            # multiple of an even m_b -- round up rather than require it exactly
+            # (see _round_up_to_multiple), and build the corresponding full-period
+            # array explicitly (bypassing LinearGrid's own M-driven path, which can
+            # only ever produce an odd count) rather than picking a new M.
+            n_theta_full = 2 * (M + 1) if self.sym else 2 * M + 1
+            n_theta = self._round_up_to_multiple(n_theta_full, self._m_b)
+            dtheta = 2 * np.pi / n_theta
+            # corners=True (default): start at theta=0, itself a corner angle.
+            # corners=False: offset by half the spacing so no sample coincides
+            # with a corner angle 2*pi*k/m_b at any toroidal plane (the rotation
+            # below preserves this half-spacing offset relative to the corners).
+            offset = 0.0 if self._corners else 0.5
+            theta = (np.arange(n_theta) + offset) * dtheta
+            # Since the array branch below never touches self._M, set it here so
+            # grid.M still reports the resolution actually requested (matching
+            # LinearGrid's own M-branch, which sets self._M unconditionally).
+            self._M = check_nonnegint(M, "M")
+            M = None
+        nodes, spacing = super()._create_nodes(
+            L=L,
+            M=M,
+            N=N,
+            NFP=NFP,
+            axis=axis,
+            endpoint=endpoint,
+            rho=rho,
+            theta=theta,
+            zeta=zeta,
+        )
+        non_uniform = (
+            self.iota_b != 0 and nodes.shape[0] > 0 and np.unique(nodes[:, 2]).size > 1
+        )
+        if non_uniform:
+            self._is_meshgrid = False
+            self._can_fft2 = False
+            self._fft_poloidal = False
+            self._fft_toroidal = False
+        # Stash the poloidal "slot" (pre-rotation theta) that each node belongs to,
+        # in the same row order as `nodes`, before rotating. Once rotated, distinct
+        # toroidal planes generically no longer share theta *values* even though
+        # they share the same number of poloidal *slots* -- and callers throughout
+        # DESC (e.g. plot_3d's `coords["X"].reshape((grid.num_theta, grid.num_rho,
+        # grid.num_zeta))`) rely on `num_theta`/`unique_poloidal_idx` meaning "how
+        # many poloidal slots per ring", not "how many distinct theta values in the
+        # whole grid". See `_sort_nodes`/`_find_unique_inverse_nodes` below, which
+        # keep this aligned with `self.nodes` through sorting.
+        self._pre_rotation_theta = nodes[:, 1].copy()
+        nodes = self._rotate_theta(nodes, self.iota_b)
+        return nodes, spacing
+
+    def _sort_nodes(self):
+        sort_idx = np.lexsort((self.nodes[:, 1], self.nodes[:, 0], self.nodes[:, 2]))
+        self._nodes = self.nodes[sort_idx]
+        self._spacing = self.spacing[sort_idx]
+        self._pre_rotation_theta = self._pre_rotation_theta[sort_idx]
+
+    def _find_unique_inverse_nodes(self):
+        __, unique_rho_idx, inverse_rho_idx = np.unique(
+            self.nodes[:, 0], return_index=True, return_inverse=True
+        )
+        __, unique_poloidal_idx, inverse_poloidal_idx = np.unique(
+            self._pre_rotation_theta, return_index=True, return_inverse=True
+        )
+        __, unique_zeta_idx, inverse_zeta_idx = np.unique(
+            self.nodes[:, 2], return_index=True, return_inverse=True
+        )
+        return (
+            unique_rho_idx,
+            inverse_rho_idx,
+            unique_poloidal_idx,
+            inverse_poloidal_idx,
+            unique_zeta_idx,
+            inverse_zeta_idx,
+        )
+
+
+class SharpQuadratureGrid(_SharpGridMixin, QuadratureGrid):
+    """QuadratureGrid whose poloidal nodes respect an m_b-fold sharp boundary.
+
+    Modeled off ConcentricGrid's ``jacobi`` node pattern: QuadratureGrid's radial
+    nodes are already the roots of the same shifted Jacobi polynomial
+    (``special.js_roots((L + 2) // 2, 2, 2)`` here vs.
+    ``special.js_roots(L // 2 + 1, 2, 2)`` for ConcentricGrid's ``jacobi``
+    pattern -- ``(L + 2) // 2 == L // 2 + 1`` for every integer L), so it never
+    has a node at the magnetic axis or at rho=1, and hence can never sit on a
+    sharp corner regardless of the poloidal angle. Used for exact volume
+    quadrature and for evaluating derivative-dependent quantities (|B|, current
+    density, ...) everywhere.
+
+    Parameters
+    ----------
+    L, M, N : int
+        Radial, poloidal and toroidal grid resolution. The number of poloidal
+        nodes actually used is the smallest multiple of ``m_b`` that is >=
+        ``2*M+1`` (which is odd for every integer M, so can only itself be a
+        multiple of ``m_b`` when ``m_b`` is odd -- see ``_round_up_to_multiple``).
+    NFP : int
+        Number of field periods (Default = 1).
+    m_b : int
+        Poloidal mode number of the boundary (number of sharp corners).
+    n_b : int
+        Toroidal mode number of the boundary, per field period
+        (ι_b = NFP * n_b / m_b).
+
+    """
+
+    _io_attrs_ = _Grid._io_attrs_ + ["_m_b", "_n_b"]
+    _static_attrs = _Grid._static_attrs + ["_m_b", "_n_b"]
+
+    def __init__(self, L, M, N, NFP=1, m_b=1, n_b=0):
+        self._m_b, self._n_b = self._validate_m_b_n_b(m_b, n_b, NFP)
+        super().__init__(L=L, M=M, N=N, NFP=NFP)
+        self._finalize_sharp(is_meshgrid=True, fft_poloidal=True, fft_toroidal=True)
+
+    def change_resolution(self, L, M, N, NFP=None):
+        """Change the resolution of the grid, keeping it corner-tracking."""
+        NFP = self.NFP if NFP is None else NFP
+        if L != self.L or M != self.M or N != self.N or NFP != self.NFP:
+            super().change_resolution(L, M, N, NFP)
+            self._finalize_sharp(is_meshgrid=True, fft_poloidal=True, fft_toroidal=True)
+
+    def _create_nodes(self, L=1, M=1, N=1, NFP=1):
+        """Create grid nodes and weights.
+
+        Identical to ``QuadratureGrid._create_nodes`` except that the poloidal
+        node count is rounded up to the nearest multiple of ``m_b`` instead of
+        being fixed at ``2*M+1`` (see ``_round_up_to_multiple``).
+        """
+        self._L = check_nonnegint(L, "L", False)
+        self._M = check_nonnegint(M, "M", False)
+        self._N = check_nonnegint(N, "N", False)
+        self._NFP = check_posint(NFP, "NFP", False)
+        self._period = (np.inf, 2 * np.pi, 2 * np.pi / self._NFP)
+        L = (L + 2) // 2
+        M_theta = self._round_up_to_multiple(2 * M + 1, self._m_b)
+        N_zeta = 2 * N + 1
+
+        r, dr = special.js_roots(L, 2, 2)
+        dr /= r  # remove r weight function associated with the shifted Jacobi weights
+
+        t = np.linspace(0, 2 * np.pi, M_theta, endpoint=False)
+        dt = 2 * np.pi / M_theta * np.ones_like(t)
+
+        z = np.linspace(0, 2 * np.pi / NFP, N_zeta, endpoint=False)
+        dz = 2 * np.pi / N_zeta * np.ones_like(z)
+
+        r, t, z = map(np.ravel, np.meshgrid(r, t, z, indexing="ij"))
+        dr, dt, dz = map(np.ravel, np.meshgrid(dr, dt, dz, indexing="ij"))
+
+        nodes = np.column_stack([r, t, z])
+        spacing = np.column_stack([dr, dt, dz])
+
+        return nodes, spacing
+
+
+class SharpConcentricGrid(_SharpGridMixin, ConcentricGrid):
+    """ConcentricGrid whose ring node-counts respect an m_b-fold sharp boundary.
+
+    Forces the ``jacobi`` node pattern -- the only pattern ``ConcentricGrid``
+    offers whose radial nodes are all strictly interior to (0, 1); the others
+    (``cheb2`` in particular) place a node at rho=1, which sits on a sharp-map
+    singularity (see ``desc.basis._sharp_singularity_distances``). On top of
+    that, the number of poloidal nodes on each ring is rounded to the nearest
+    multiple of ``m_b`` (rather than ``ConcentricGrid``'s usual "round up to the
+    next odd number"), so each ring is discretely symmetric under rotation by
+    ``2*pi/m_b``, the corners' own period. Intended as an efficient
+    evaluation/derivative grid, e.g. as a force-balance solution grid.
+
+    Parameters
+    ----------
+    L, M, N : int
+        Radial, poloidal and toroidal grid resolution.
+    NFP : int
+        Number of field periods (Default = 1).
+    sym : bool
+        Poloidal up/down symmetry. See ``ConcentricGrid``.
+    axis : bool
+        Must be False (the default): SharpConcentricGrid never places a node at
+        the magnetic axis, where derivatives of the sharp basis are undefined.
+        Accepted, rather than simply omitted, only for a clear error message and
+        for parity with ``ConcentricGrid``'s own signature.
+    node_pattern : str
+        Must be ``"jacobi"`` (the default): the only pattern whose radial nodes
+        are all strictly interior to (0, 1) -- see class docstring. Accepted,
+        rather than simply omitted, only for a clear error message and for
+        parity with ``ConcentricGrid``'s own signature.
+    m_b : int
+        Poloidal mode number of the boundary (number of sharp corners).
+    n_b : int
+        Toroidal mode number of the boundary, per field period
+        (ι_b = NFP * n_b / m_b).
+
+    """
+
+    _io_attrs_ = _Grid._io_attrs_ + ["_m_b", "_n_b"]
+    _static_attrs = _Grid._static_attrs + ["_m_b", "_n_b"]
+
+    def __init__(
+        self,
+        L,
+        M,
+        N,
+        NFP=1,
+        sym=False,
+        axis=False,
+        node_pattern="jacobi",
+        m_b=1,
+        n_b=0,
+    ):
+        self._m_b, self._n_b = self._validate_m_b_n_b(m_b, n_b, NFP)
+        errorif(
+            axis,
+            ValueError,
+            "SharpConcentricGrid does not support axis=True: it places a node "
+            "exactly on the magnetic axis, where derivatives of the sharp basis "
+            "are undefined (see desc.basis._sharp_singularity_distances).",
+        )
+        super().__init__(
+            L=L, M=M, N=N, NFP=NFP, sym=sym, axis=axis, node_pattern=node_pattern
+        )
+        self._assert_no_singular_nodes()
+        self._finalize_sharp(is_meshgrid=False, fft_poloidal=False, fft_toroidal=True)
+
+    def change_resolution(self, L, M, N, NFP=None):
+        """Change the resolution of the grid, keeping it corner-tracking."""
+        NFP = self.NFP if NFP is None else NFP
+        if L != self.L or M != self.M or N != self.N or NFP != self.NFP:
+            super().change_resolution(L, M, N, NFP)
+            self._assert_no_singular_nodes()
+            self._finalize_sharp(
+                is_meshgrid=False, fft_poloidal=False, fft_toroidal=True
+            )
+
+    def _assert_no_singular_nodes(self):
+        rho = self.nodes[:, 0]
+        errorif(
+            bool(np.any(rho == 0)) or bool(np.any(rho == 1)),
+            ValueError,
+            "SharpConcentricGrid must not contain nodes at rho=0 or rho=1.",
+        )
+
+    def _create_nodes(self, L, M, N, NFP=1, axis=False, node_pattern="jacobi"):
+        """Create grid nodes and weights.
+
+        Identical to ``ConcentricGrid._create_nodes`` with ``node_pattern="jacobi"``
+        except that each ring's poloidal node count is rounded to the nearest
+        multiple of ``m_b`` instead of up to the next odd number.
+        """
+        errorif(
+            node_pattern != "jacobi",
+            ValueError,
+            "SharpConcentricGrid only supports node_pattern='jacobi': the other "
+            "patterns place a node at rho=0 or rho=1, which sits on a sharp-map "
+            "singularity.",
+        )
+        self._L = check_nonnegint(L, "L", False)
+        self._M = check_nonnegint(M, "M", False)
+        self._N = check_nonnegint(N, "N", False)
+        self._NFP = check_posint(NFP, "NFP", False)
+        self._period = (np.inf, 2 * np.pi, 2 * np.pi / self._NFP)
+
+        rho = np.sort(special.js_roots(L // 2 + 1, 2, 2)[0], axis=None)
+        if axis:
+            rho[0] = 0
+        elif rho[0] == 0:  # pragma: no cover -- jacobi roots are strictly interior
+            rho[0] = rho[1] / 10
+
+        drho = _midpoint_spacing(rho, jnp=np)
+        r = []
+        t = []
+        dr = []
+        dt = []
+
+        for iring in range(L // 2 + 1, 0, -1):
+            ntheta = 2 * M + np.ceil((M / L) * (5 - 4 * iring)).astype(int)
+            # Round to the nearest positive multiple of m_b (instead of
+            # ConcentricGrid's usual "round up to the next odd number"), so this
+            # ring's node set has the same discrete m_b-fold rotational symmetry
+            # as the boundary's sharp corners:
+            # n_theta_corrected = m_b * argmin_k |n_theta - k*m_b|.
+            ntheta = self._round_to_multiple(max(int(ntheta), 1), self._m_b)
+            if self.sym:
+                # for symmetry, we want M+1 nodes on outer surface, so (2M+1+1)
+                # for now, cut in half in _enforce_symmetry
+                ntheta += 1
+            dtheta = 2 * np.pi / ntheta
+            theta = np.linspace(0, 2 * np.pi, ntheta, endpoint=False)
+            if self.sym:
+                theta = (theta + dtheta / 2) % (2 * np.pi)
+            for tk in theta:
+                r.append(rho[-iring])
+                t.append(tk)
+                dt.append(dtheta)
+                dr.append(drho[-iring])
+
+        r = np.asarray(r)
+        t = np.asarray(t)
+        dr = np.asarray(dr)
+        dt = np.asarray(dt)
+        dimzern = r.size
+
+        z = np.linspace(0, 2 * np.pi / NFP, 2 * N + 1, endpoint=False)
+        dz = 2 * np.pi / z.size
+
+        r = np.tile(r, 2 * N + 1)
+        t = np.tile(t, 2 * N + 1)
+        z = np.tile(z[np.newaxis], (dimzern, 1)).flatten(order="F")
+        dr = np.tile(dr, 2 * N + 1)
+        dt = np.tile(dt, 2 * N + 1)
+        dz = np.ones_like(z) * dz
+        nodes = np.column_stack([r, t, z])
+        spacing = np.column_stack([dr, dt, dz])
+
+        return nodes, spacing
+
+
+def SharpEquilibriumGrid(
+    grid_type="concentric",
+    L=None,
+    M=None,
+    N=None,
+    NFP=None,
+    m_b=None,
+    n_b=None,
+    sym=None,
+    eq=None,
+    **kwargs,
+):
+    """Build a grid matched to a SharpEquilibrium's m_b-fold sharp boundary.
+
+    A thin dispatcher over three grid types, selected via ``grid_type``:
+
+    * ``"linear"`` (:class:`SharpLinearGrid`): for plotting. May include a node
+      exactly at the axis and/or at a sharp corner (see ``axis``, ``corners``).
+    * ``"quadratic"`` (:class:`SharpQuadratureGrid`): a tensor-product grid on
+      Gauss-Jacobi radial nodes -- the same pattern as ``ConcentricGrid``'s
+      ``jacobi`` node pattern -- for exact volume quadrature and for evaluating
+      derivative-dependent quantities (|B|, current density, ...) everywhere.
+    * ``"concentric"`` (:class:`SharpConcentricGrid`): ``ConcentricGrid``'s
+      ``jacobi`` pattern, with fewer poloidal nodes near the axis, for efficient
+      evaluation/derivatives, e.g. as a force-balance solution grid.
+
+    All three place their poloidal nodes so that (1) the sample set has the same
+    m_b-fold discrete rotational symmetry as the boundary's sharp corners, and
+    (2) that sample set is rigidly rotated by ι_b·ζ = (NFP·n_b/m_b)·ζ at each
+    toroidal plane, so the nodes' phase relative to the corners does not drift
+    with ζ.
+
+    Parameters
+    ----------
+    grid_type : {"linear", "quadratic", "concentric"}
+        Type of grid to build.
+    L, M, N : int
+        Radial, poloidal and toroidal grid resolution. Required for
+        ``grid_type in ("quadratic", "concentric")``; optional (as for
+        ``LinearGrid``) for ``grid_type="linear"``.
+    NFP : int
+        Number of field periods. Default 1, or ``eq.NFP`` if ``eq`` is given.
+    m_b, n_b : int
+        Poloidal and toroidal (per field period) mode numbers of the boundary;
+        ι_b = NFP * n_b / m_b. Default ``m_b=1, n_b=0`` (a smooth, cornerless
+        boundary), or ``eq.m_b``/``eq.n_b`` if ``eq`` is given.
+    sym : bool
+        Poloidal up/down symmetry (ignored for ``grid_type="quadratic"``, which
+        is never symmetric). Default False, or ``eq.sym`` if ``eq`` is given.
+    eq : Equilibrium or SharpEquilibrium, optional
+        If given, defaults ``NFP``, ``m_b``, ``n_b`` and ``sym`` from ``eq``, and
+        ``L``, ``M``, ``N`` from ``eq.L_grid``/``eq.M_grid``/``eq.N_grid`` (or,
+        lacking those, ``eq.L``/``eq.M``/``eq.N``), matching the convention DESC's
+        own objectives use to build a default solution grid from an equilibrium.
+    **kwargs
+        Additional keyword arguments specific to the chosen ``grid_type``,
+        forwarded to the underlying grid class -- e.g. ``axis``, ``corners``,
+        ``endpoint``, ``rho``, ``theta``, ``zeta`` for ``"linear"``.
+
+    Returns
+    -------
+    grid : SharpLinearGrid or SharpQuadratureGrid or SharpConcentricGrid
+
+    """
+    if eq is not None:
+        NFP = setdefault(NFP, eq.NFP)
+        m_b = setdefault(m_b, eq.m_b)
+        n_b = setdefault(n_b, eq.n_b)
+        sym = setdefault(sym, eq.sym)
+        L = setdefault(L, getattr(eq, "L_grid", getattr(eq, "L", None)))
+        M = setdefault(M, getattr(eq, "M_grid", getattr(eq, "M", None)))
+        N = setdefault(N, getattr(eq, "N_grid", getattr(eq, "N", None)))
+    NFP = setdefault(NFP, 1)
+    m_b = setdefault(m_b, 1)
+    n_b = setdefault(n_b, 0)
+    sym = setdefault(sym, False)
+
+    if grid_type == "linear":
+        return SharpLinearGrid(
+            L=L, M=M, N=N, NFP=NFP, sym=sym, m_b=m_b, n_b=n_b, **kwargs
+        )
+    errorif(
+        L is None or M is None or N is None,
+        ValueError,
+        f"L, M and N are all required for grid_type={grid_type!r} "
+        "(only grid_type='linear' has usable defaults for them).",
+    )
+    if grid_type == "quadratic":
+        return SharpQuadratureGrid(L=L, M=M, N=N, NFP=NFP, m_b=m_b, n_b=n_b, **kwargs)
+    if grid_type == "concentric":
+        return SharpConcentricGrid(
+            L=L, M=M, N=N, NFP=NFP, sym=sym, m_b=m_b, n_b=n_b, **kwargs
+        )
+    raise ValueError(
+        "grid_type must be one of 'linear', 'quadratic', 'concentric', got "
+        f"{grid_type!r}"
+    )
 
 
 def _round(x, tol):

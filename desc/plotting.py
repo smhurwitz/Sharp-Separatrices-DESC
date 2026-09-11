@@ -22,7 +22,13 @@ from desc.coils import CoilSet, _Coil
 from desc.compute import data_index, get_transforms
 from desc.compute.utils import _parse_parameterization
 from desc.equilibrium.coords import map_coordinates
-from desc.grid import Grid, LinearGrid
+from desc.grid import (
+    Grid,
+    LinearGrid,
+    SharpConcentricGrid,
+    SharpLinearGrid,
+    SharpQuadratureGrid,
+)
 from desc.integrals import surface_averages_map
 from desc.integrals._bounce_utils import Y_B_rule, num_well_rule
 from desc.magnetic_fields import field_line_integrate
@@ -3542,8 +3548,41 @@ def plot_qs_error(  # noqa: 16 fxn too complex
     return fig, ax
 
 
+_POLAR_THETA_TICKS = [
+    0,
+    np.pi / 4,
+    np.pi / 2,
+    3 / 4 * np.pi,
+    np.pi,
+    5 / 4 * np.pi,
+    3 / 2 * np.pi,
+    7 / 4 * np.pi,
+]
+_POLAR_THETA_TICKLABELS = [
+    "$0$",
+    r"$\frac{\pi}{4}$",
+    r"$\frac{\pi}{2}$",
+    r"$\frac{3\pi}{4}$",
+    r"$\pi$",
+    r"$\frac{5\pi}{4}$",
+    r"$\frac{3\pi}{2}$",
+    r"$\frac{7\pi}{4}$",
+]
+
+
 def plot_grid(grid, return_data=False, **kwargs):
-    """Plot the location of collocation nodes on the zeta=0 plane.
+    """Plot the location of collocation nodes, in a polar (rho, theta) view.
+
+    For a plain (non-sharp) ``grid``, this plots a single panel at zeta=0, as
+    before. For a ``SharpLinearGrid``/``SharpQuadratureGrid``/``SharpConcentricGrid``
+    -- any grid with sharp-corner-tracking node placement, see
+    ``desc.grid.SharpEquilibriumGrid`` -- this instead plots one panel per toroidal
+    plane in the grid (up to ``nzeta`` of them), and on each, marks the ``m_b``
+    boundary pre-vertices with a dashed radial line and a star at rho=1, at their
+    actual location ``theta = 2*pi*k/m_b + iota_b*zeta`` for that plane -- so you
+    can see, plane by plane, that the grid nodes keep the same phase relative to
+    the corners as zeta advances (see ``desc.grid.SharpEquilibriumGrid``'s
+    docstring, and ``desc.basis.sharp_map``).
 
     Parameters
     ----------
@@ -3561,6 +3600,16 @@ def plot_grid(grid, return_data=False, **kwargs):
         * ``figsize``: tuple of length 2, the size of the figure (to be passed to
           matplotlib)
         * ``title_fontsize``: integer, font size of the title
+        * ``nzeta``: int, sharp grids only. Number of toroidal planes to plot,
+          evenly selected from the grid's unique zeta values. Default is all of
+          them, up to 6.
+        * ``corners``: bool, sharp grids only. Whether to mark the location of the
+          ``m_b`` boundary pre-vertices on each panel. Default True (a grid with
+          ``m_b=1``, i.e. no real corners, never marks them).
+        * ``markersize``: float, sharp grids only. Size of the node markers.
+          Default 4.
+        * ``corner_color``: str, sharp grids only. Color used for the pre-vertex
+          markers/lines. Default ``"tab:red"``.
 
     Returns
     -------
@@ -3582,64 +3631,139 @@ def plot_grid(grid, return_data=False, **kwargs):
         grid = ConcentricGrid(L=20, M=10, N=1, node_pattern="jacobi")
         fig, ax = plot_grid(grid)
 
+    Sharp grids additionally show multiple toroidal planes with the boundary's
+    pre-vertices marked:
+
+    .. code-block:: python
+
+        from desc.plotting import plot_grid
+        from desc.grid import SharpConcentricGrid
+        grid = SharpConcentricGrid(L=20, M=10, N=3, NFP=1, m_b=3, n_b=1)
+        fig, ax = plot_grid(grid)
+
     """
-    fig = plt.figure(figsize=kwargs.pop("figsize", (4, 4)))
-    ax = plt.subplot(projection="polar")
     title_fontsize = kwargs.pop("title_fontsize", None)
+
+    if not isinstance(
+        grid, (SharpLinearGrid, SharpQuadratureGrid, SharpConcentricGrid)
+    ):
+        fig = plt.figure(figsize=kwargs.pop("figsize", (4, 4)))
+        ax = plt.subplot(projection="polar")
+
+        assert (
+            len(kwargs) == 0
+        ), f"plot_grid got unexpected keyword argument: {kwargs.keys()}"
+
+        # node locations
+        nodes = grid.nodes[grid.nodes[:, 2] == 0]
+        ax.scatter(nodes[:, 1], nodes[:, 0], s=4)
+        ax.set_ylim(0, 1)
+        ax.set_xticks(_POLAR_THETA_TICKS)
+        ax.set_xticklabels(_POLAR_THETA_TICKLABELS)
+        ax.set_yticklabels([])
+        if grid.__class__.__name__ in ["LinearGrid", "Grid", "QuadratureGrid"]:
+            ax.set_title(
+                "{}, $L={}$, $M={}, pattern: {}$".format(
+                    grid.__class__.__name__, grid.L, grid.M, grid.node_pattern
+                ),
+                pad=20,
+            )
+        if grid.__class__.__name__ in ["ConcentricGrid"]:
+            ax.set_title(
+                "{}, $M={}$, pattern: {}".format(
+                    grid.__class__.__name__,
+                    grid.M,
+                    grid.node_pattern,
+                ),
+                pad=20,
+                fontsize=title_fontsize,
+            )
+        _set_tight_layout(fig)
+
+        plot_data = {"rho": nodes[:, 0], "theta": nodes[:, 1]}
+
+        if return_data:
+            return fig, ax, plot_data
+
+        return fig, ax
+
+    # --- sharp grid: multiple toroidal planes, pre-vertices marked ---
+    zeta_all = np.unique(grid.nodes[:, 2])
+    nzeta = min(kwargs.pop("nzeta", min(zeta_all.size, 6)), zeta_all.size)
+    # evenly spaced selection of toroidal planes, always including the first
+    zeta_idx = np.unique(np.linspace(0, zeta_all.size - 1, nzeta).round().astype(int))
+    zeta_vals = zeta_all[zeta_idx]
+    nphi = zeta_vals.size
+
+    show_corners = kwargs.pop("corners", True) and grid.m_b > 1
+    markersize = kwargs.pop("markersize", 4)
+    corner_color = kwargs.pop("corner_color", "tab:red")
+
+    rows = np.floor(np.sqrt(nphi)).astype(int)
+    cols = np.ceil(nphi / rows).astype(int)
+    figsize = kwargs.pop("figsize", (3.2 * cols, 3.6 * rows))
 
     assert (
         len(kwargs) == 0
     ), f"plot_grid got unexpected keyword argument: {kwargs.keys()}"
 
-    # node locations
-    nodes = grid.nodes[grid.nodes[:, 2] == 0]
-    ax.scatter(nodes[:, 1], nodes[:, 0], s=4)
-    ax.set_ylim(0, 1)
-    ax.set_xticks(
-        [
-            0,
-            np.pi / 4,
-            np.pi / 2,
-            3 / 4 * np.pi,
-            np.pi,
-            5 / 4 * np.pi,
-            3 / 2 * np.pi,
-            7 / 4 * np.pi,
-        ]
+    fig, ax = plt.subplots(
+        rows, cols, figsize=figsize, squeeze=False, subplot_kw={"projection": "polar"}
     )
-    ax.set_xticklabels(
-        [
-            "$0$",
-            r"$\frac{\pi}{4}$",
-            r"$\frac{\pi}{2}$",
-            r"$\frac{3\pi}{4}$",
-            r"$\pi$",
-            r"$\frac{5\pi}{4}$",
-            r"$\frac{3\pi}{2}$",
-            r"$\frac{7\pi}{4}$",
-        ]
-    )
-    ax.set_yticklabels([])
-    if grid.__class__.__name__ in ["LinearGrid", "Grid", "QuadratureGrid"]:
-        ax.set_title(
-            "{}, $L={}$, $M={}, pattern: {}$".format(
-                grid.__class__.__name__, grid.L, grid.M, grid.node_pattern
-            ),
-            pad=20,
-        )
-    if grid.__class__.__name__ in ["ConcentricGrid"]:
-        ax.set_title(
-            "{}, $M={}$, pattern: {}".format(
-                grid.__class__.__name__,
-                grid.M,
-                grid.node_pattern,
-            ),
-            pad=20,
+    ax = ax.flatten()
+
+    plot_data = {
+        "rho": [],
+        "theta": [],
+        "zeta": zeta_vals,
+        "corner_theta": [] if show_corners else None,
+    }
+    for i, z in enumerate(zeta_vals):
+        a = ax[i]
+        mask = np.isclose(grid.nodes[:, 2], z)
+        rho, theta = grid.nodes[mask, 0], grid.nodes[mask, 1]
+        a.scatter(theta, rho, s=markersize, zorder=2)
+        plot_data["rho"].append(rho)
+        plot_data["theta"].append(theta)
+
+        if show_corners:
+            corner_theta = np.mod(
+                2 * np.pi * np.arange(grid.m_b) / grid.m_b + grid.iota_b * z,
+                2 * np.pi,
+            )
+            for ct in corner_theta:
+                a.plot([ct, ct], [0, 1], color=corner_color, lw=1.2, ls="--", zorder=3)
+            a.scatter(
+                corner_theta,
+                np.ones_like(corner_theta),
+                marker="*",
+                s=90,
+                color=corner_color,
+                zorder=4,
+                label="pre-vertex" if i == 0 else None,
+            )
+            plot_data["corner_theta"].append(corner_theta)
+
+        a.set_ylim(0, 1)
+        a.set_xticks(_POLAR_THETA_TICKS)
+        a.set_xticklabels(_POLAR_THETA_TICKLABELS)
+        a.set_yticklabels([])
+        a.set_title(
+            r"$\zeta \cdot N_{{FP}}/2\pi = {:.3f}$".format(grid.NFP * z / (2 * np.pi)),
             fontsize=title_fontsize,
         )
-    _set_tight_layout(fig)
+    for j in range(nphi, ax.size):
+        ax[j].axis("off")
 
-    plot_data = {"rho": nodes[:, 0], "theta": nodes[:, 1]}
+    fig.suptitle(
+        "{}, $m_b={}$, $n_b={}$, $N_{{FP}}={}$".format(
+            grid.__class__.__name__, grid.m_b, grid.n_b, grid.NFP
+        ),
+        fontsize=title_fontsize,
+    )
+    if show_corners:
+        ax[0].legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize="small")
+    _set_tight_layout(fig)
 
     if return_data:
         return fig, ax, plot_data
@@ -3937,7 +4061,11 @@ def plot_basis(  # noqa : C901
 
         return fig, ax
 
-    elif basis.__class__.__name__ in ["ZernikePolynomial", "FourierZernikeBasis", "SharpFourierZernikeBasis"]:
+    elif basis.__class__.__name__ in [
+        "ZernikePolynomial",
+        "FourierZernikeBasis",
+        "SharpFourierZernikeBasis",
+    ]:
         lmax = abs(basis.modes[:, 0]).max().astype(int)
         mmax = abs(basis.modes[:, 1]).max().astype(int)
 
@@ -3993,17 +4121,21 @@ def plot_basis(  # noqa : C901
             return fig, ax, plot_data
 
         return fig, ax
-    
+
     elif basis.__class__.__name__ == "GeneralizedFourierZernikeBasis":
         std_basis = basis.std_basis
         shp_basis = basis.shp_basis
 
         L_std = int(np.max(std_basis.modes[:, 0])) if std_basis.modes.size else 0
-        M_std = int(np.max(np.abs(std_basis.modes[:, 1]))) if std_basis.modes.size else 0
+        M_std = (
+            int(np.max(np.abs(std_basis.modes[:, 1]))) if std_basis.modes.size else 0
+        )
 
         # sharp basis uses positive l internally, generalized basis uses negative l
         L_shp = int(np.max(shp_basis.modes[:, 0])) if shp_basis.modes.size else 0
-        M_shp = int(np.max(np.abs(shp_basis.modes[:, 1]))) if shp_basis.modes.size else 0
+        M_shp = (
+            int(np.max(np.abs(shp_basis.modes[:, 1]))) if shp_basis.modes.size else 0
+        )
 
         mmax = max(M_std, M_shp)
 
@@ -4042,7 +4174,9 @@ def plot_basis(  # noqa : C901
 
         center_row = L_shp
 
-        for i, (l, m) in enumerate(zip(modes[:, 0].astype(int), modes[:, 1].astype(int))):
+        for i, (l, m) in enumerate(
+            zip(modes[:, 0].astype(int), modes[:, 1].astype(int))
+        ):
             Z = Zs[:, i].reshape((grid.num_rho, grid.num_theta))
 
             # generalized layout:

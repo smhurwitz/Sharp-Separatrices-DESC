@@ -19,7 +19,15 @@ from desc.coils import CoilSet, FourierXYZCoil, MixedCoilSet
 from desc.compute import data_index
 from desc.examples import get
 from desc.geometry import FourierRZToroidalSurface, FourierXYZCurve
-from desc.grid import ConcentricGrid, Grid, LinearGrid, QuadratureGrid
+from desc.grid import (
+    ConcentricGrid,
+    Grid,
+    LinearGrid,
+    QuadratureGrid,
+    SharpConcentricGrid,
+    SharpLinearGrid,
+    SharpQuadratureGrid,
+)
 from desc.integrals import surface_averages
 from desc.io import load
 from desc.magnetic_fields import (
@@ -728,6 +736,65 @@ class TestPlotGrid:
         grid = ConcentricGrid(L=20, M=10, N=1, node_pattern="ocs")
         fig, ax = plot_grid(grid)
         return fig
+
+    @pytest.mark.unit
+    @pytest.mark.mpl_image_compare(remove_text=True, tolerance=tol_2d)
+    def test_plot_grid_sharp_linear(self):
+        """Test plotting a SharpLinearGrid: multiple planes, corners marked."""
+        grid = SharpLinearGrid(M=8, N=4, NFP=1, m_b=3, n_b=1)
+        fig, ax, data = plot_grid(grid, return_data=True)
+        assert np.asarray(ax).size == len(data["zeta"])
+        return fig
+
+    @pytest.mark.unit
+    @pytest.mark.mpl_image_compare(remove_text=True, tolerance=tol_2d)
+    def test_plot_grid_sharp_quadratic(self):
+        """Test plotting a SharpQuadratureGrid: multiple planes, corners marked."""
+        grid = SharpQuadratureGrid(L=8, M=4, N=4, NFP=1, m_b=3, n_b=1)
+        fig, ax, data = plot_grid(grid, return_data=True)
+        assert np.asarray(ax).size == len(data["zeta"])
+        return fig
+
+    @pytest.mark.unit
+    @pytest.mark.mpl_image_compare(remove_text=True, tolerance=tol_2d)
+    def test_plot_grid_sharp_concentric(self):
+        """Test plotting a SharpConcentricGrid: multiple planes, corners marked."""
+        grid = SharpConcentricGrid(L=10, M=6, N=4, NFP=1, m_b=3, n_b=1)
+        fig, ax, data = plot_grid(grid, return_data=True, nzeta=3)
+        assert np.asarray(ax).size == 3
+        return fig
+
+    @pytest.mark.unit
+    def test_plot_grid_sharp_marks_true_pre_vertices(self):
+        """The marked pre-vertices are exactly theta = 2*pi*k/m_b + iota_b*zeta."""
+        m_b, n_b, NFP = 3, 1, 1
+        iota_b = NFP * n_b / m_b
+        grid = SharpConcentricGrid(L=10, M=6, N=4, NFP=NFP, m_b=m_b, n_b=n_b)
+        fig, ax, data = plot_grid(grid, return_data=True)
+        plt.close(fig)
+        for z, corner_theta in zip(data["zeta"], data["corner_theta"]):
+            expected = np.mod(2 * np.pi * np.arange(m_b) / m_b + iota_b * z, 2 * np.pi)
+            np.testing.assert_allclose(
+                np.sort(corner_theta), np.sort(expected), atol=1e-12
+            )
+
+    @pytest.mark.unit
+    def test_plot_grid_sharp_m_b_1_has_no_corners(self):
+        """A grid with m_b=1 (no real corners) never marks any pre-vertices."""
+        grid = SharpConcentricGrid(L=10, M=6, N=1, NFP=1, m_b=1, n_b=0)
+        fig, ax, data = plot_grid(grid, return_data=True)
+        plt.close(fig)
+        assert data["corner_theta"] is None
+
+    @pytest.mark.unit
+    def test_plot_grid_nonsharp_still_single_panel(self):
+        """Plain grids are unaffected: still a single Axes, no corner data key."""
+        fig, ax, data = plot_grid(
+            ConcentricGrid(L=20, M=10, N=1, node_pattern="jacobi"), return_data=True
+        )
+        plt.close(fig)
+        assert isinstance(ax, plt.Axes)
+        assert "corner_theta" not in data
 
 
 class TestPlotBasis:
