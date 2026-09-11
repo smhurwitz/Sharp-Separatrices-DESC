@@ -2910,7 +2910,8 @@ class SharpEquilibrium(Equilibrium):
     m_b : int (optional)
         poloidal mode number associated with the boundary of the volume
     n_b : int (optional)
-        toroidal mode number associated with the boundary of the volume
+        toroidal mode number associated with the boundary of the volume, per field
+        period (ι_b = NFP*n_b/m_b)
     β : float (optional)
         Angle of corners for lens mapping method.
     sharp_type : str (optional)

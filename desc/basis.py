@@ -1886,7 +1886,7 @@ SHARP_CORNER_ERROR_DIST = 1e-8
 SHARP_CORNER_WARN_DIST = 1e-6
 
 
-def _sharp_singularity_distances(nodes, m_b, n_b):
+def _sharp_singularity_distances(nodes, m_b, n_b, NFP):
     """Distances from each node to the singularities of the sharp map.
 
     The sharp map is singular in two places. In both, the map *itself* is well
@@ -1895,7 +1895,7 @@ def _sharp_singularity_distances(nodes, m_b, n_b):
     * The magnetic axis, ρ=0, where ``|L₂|**(2/m_b)`` is a bare 0/0. The derivative
       is NaN exactly at ρ=0 but accurate at every ρ>0 (verified down to ρ=1e-12),
       so only an exact hit is a problem and no proximity test is warranted.
-    * The m_b boundary corners, ρ=1 with α_b = θ - n_b ζ/m_b ≡ 0 (mod 2π/m_b). No
+    * The m_b boundary corners, ρ=1 with α_b = θ - NFP·n_b·ζ/m_b ≡ 0 (mod 2π/m_b). No
       smooth map carries the smooth unit circle onto a boundary with an interior
       angle β≠π, so these are a genuine singularity of the map rather than an
       artifact of the implementation: the first derivatives have different limits
@@ -1910,7 +1910,9 @@ def _sharp_singularity_distances(nodes, m_b, n_b):
     m_b : int
         Poloidal mode number of boundary, equals number of ridges.
     n_b : int
-        Toroidal mode number of boundary.
+        Toroidal mode number of boundary, per field period (ι_b = NFP·n_b/m_b).
+    NFP : int
+        Number of field periods.
 
     Returns
     -------
@@ -1921,14 +1923,14 @@ def _sharp_singularity_distances(nodes, m_b, n_b):
 
     """
     rho, theta, zeta = np.asarray(nodes, dtype=float).T
-    α_b = theta - n_b * zeta / m_b
+    α_b = theta - NFP * n_b * zeta / m_b
     period = 2 * np.pi / m_b
     # signed angular offset from the nearest corner angle α_b = 2πk/m_b
     dα = (α_b + period / 2) % period - period / 2
     return rho, np.hypot(1 - rho, dα)
 
 
-def _check_sharp_derivative_nodes(nodes, m_b, n_b, derivatives, number):
+def _check_sharp_derivative_nodes(nodes, m_b, n_b, NFP, derivatives, number):
     """Error or warn if derivatives are requested at a sharp-map singularity.
 
     See ``_sharp_singularity_distances`` for where the singularities are and why.
@@ -1944,7 +1946,9 @@ def _check_sharp_derivative_nodes(nodes, m_b, n_b, derivatives, number):
     m_b : int
         Poloidal mode number of boundary, equals number of ridges.
     n_b : int
-        Toroidal mode number of boundary.
+        Toroidal mode number of boundary, per field period (ι_b = NFP·n_b/m_b).
+    NFP : int
+        Number of field periods.
     derivatives : ndarray, shape(3,)
         Order of derivatives to compute in (rho, theta, zeta).
     number : int
@@ -1959,7 +1963,7 @@ def _check_sharp_derivative_nodes(nodes, m_b, n_b, derivatives, number):
         return  # the map is well defined at both singularities; only ∂ are affected
     if isinstance(nodes, jax.core.Tracer):
         return  # abstract values under jit: node positions are not inspectable
-    rho, corner_dist = _sharp_singularity_distances(nodes, m_b, n_b)
+    rho, corner_dist = _sharp_singularity_distances(nodes, m_b, n_b, NFP)
     num = rho.size
     if num == 0:
         return
@@ -1986,7 +1990,7 @@ def _check_sharp_derivative_nodes(nodes, m_b, n_b, derivatives, number):
         np.any(at_corner),
         ValueError,
         f"Derivatives of the sharp basis are undefined at the {m_b} boundary corners "
-        f"(rho=1 with theta - n_b*zeta/m_b = 2*pi*k/{m_b}): "
+        f"(rho=1 with theta - NFP*n_b*zeta/m_b = 2*pi*k/{m_b}): "
         f"{np.count_nonzero(at_corner)} of {num} nodes are within "
         f"{SHARP_CORNER_ERROR_DIST:g} of one, the closest at {closest:.3e}. "
         f"The corner is a genuine singularity of the map, not a numerical artifact: "
@@ -2026,7 +2030,7 @@ class SharpFourierZernikeBasis(_Basis):
     m_b : int
         Poloidal mode number of boundary, equals number of ridges.
     n_b : int
-        Toroidal mode number of boundary.
+        Toroidal mode number of boundary, per field period (ι_b = NFP·n_b/m_b).
     β : float
         Angle of corners for lens mapping method.
     sharp_type : str
@@ -2297,7 +2301,7 @@ class SharpFourierZernikeBasis(_Basis):
         # the map is singular at the axis and at the boundary corners; evaluating it
         # there is fine, differentiating it there is not
         _check_sharp_derivative_nodes(
-            grid.nodes, self.m_b, self.n_b, derivatives, self.number
+            grid.nodes, self.m_b, self.n_b, self.NFP, derivatives, self.number
         )
 
         r, t, z = map(jnp.asarray, grid.nodes.T)
@@ -2323,6 +2327,7 @@ class SharpFourierZernikeBasis(_Basis):
                 dz=0,
                 m_b=self.m_b,
                 n_b=self.n_b,
+                NFP=self.NFP,
                 β=self.β,
                 sharp_type=self.sharp_type,
                 number=self.number,
@@ -2970,8 +2975,8 @@ def _jacobi_jvp(dx, x, xdot):
     return f, df * xdot
 
 
-@functools.partial(jit, static_argnums=[3,4,5,6,7,8])
-def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False,
+@functools.partial(jit, static_argnums=[3,4,5,6,7,8,9])
+def sharp_map(ρ, θ, ζ, m_b, n_b, NFP, β, sharp_type, fix_quadrature=False,
               quasiconformal=False):
     """
     Perform the sharp mapping from unit disc to the desired shape.
@@ -2987,7 +2992,9 @@ def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False,
     m_b : int
         Poloidal mode number of boundary, equals number of ridges.
     n_b : int
-        Toroidal mode number of boundary.
+        Toroidal mode number of boundary, per field period (ι_b = NFP·n_b/m_b).
+    NFP : int
+        Number of field periods.
     β : float
         Angle of corners for lens mapping method.
     sharp_type : str
@@ -3006,18 +3013,18 @@ def sharp_map(ρ, θ, ζ, m_b, n_b, β, sharp_type, fix_quadrature=False,
 
     """
 
-    α_b = θ - n_b * ζ / m_b
+    α_b = θ - NFP * n_b * ζ / m_b
     if sharp_type == "hypergeometric":
         if quasiconformal:
             raise ValueError(
                 "quasiconformal=True is only defined for sharp_type='lens', "
                 "not 'hypergeometric'."
             )
-        return hyp2f1_map(ρ, α_b, m_b, fix_quadrature) * jnp.exp(1j * n_b * ζ / m_b)
+        return hyp2f1_map(ρ, α_b, m_b, fix_quadrature) * jnp.exp(1j * NFP * n_b * ζ / m_b)
     elif sharp_type == "lens":
         return lens_map(
             ρ, α_b, m_b, β, fix_quadrature, quasiconformal
-        ) * jnp.exp(1j * n_b * ζ / m_b)
+        ) * jnp.exp(1j * NFP * n_b * ζ / m_b)
     else:
         raise ValueError("Unknown sharp_type: {}".format(sharp_type))
 
@@ -3163,8 +3170,8 @@ def lens_map(ρ, α, m_b, β, fix_quadrature=False, quasiconformal=False):
     return LM
 
 
-@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
-def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, sharp_type="lens", number=4, fix_quadrature=False, quasiconformal=False):
+@functools.partial(jit, static_argnums=[5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, NFP=1, β=0.75*np.pi, sharp_type="lens", number=4, fix_quadrature=False, quasiconformal=False):
     """Evaluate the sharp Zernike polynomial for given mode numbers at given nodes.
 
     Parameters
@@ -3188,7 +3195,9 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
     m_b : int
         Poloidal mode number of boundary, equals number of ridges.
     n_b : int
-        Toroidal mode number of boundary.
+        Toroidal mode number of boundary, per field period (ι_b = NFP·n_b/m_b).
+    NFP : int
+        Number of field periods.
     β : float
         Angle of corners for lens mapping method.
     sharp_type : str
@@ -3223,16 +3232,16 @@ def sharp_zernike(r, t, z, l, m, dr=0, dt=0, dz=0, m_b=1, n_b=1, β=0.75*np.pi, 
         return zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
     elif number == 1:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, NFP, β, sharp_type, fix_quadrature, quasiconformal)
         return jnp.abs(z_tilde) * std_val
     elif number == 4:
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, NFP, β, sharp_type, fix_quadrature, quasiconformal)
         r_tilde = jnp.abs(z_tilde)
         t_tilde = jnp.angle(z_tilde)
         return zernike_radial(r_tilde, l, m, dr=0) * fourier(t_tilde, m, dt=0)
     elif number == 6:
         std_val = zernike_radial(r, l, m, dr=0) * fourier(t, m, dt=0)
-        z_tilde = sharp_map(r, t, z, m_b, n_b, β, sharp_type, fix_quadrature, quasiconformal)
+        z_tilde = sharp_map(r, t, z, m_b, n_b, NFP, β, sharp_type, fix_quadrature, quasiconformal)
 
         sharp_val = jnp.where(
             m == -1,

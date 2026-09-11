@@ -759,8 +759,8 @@ class TestQuasiconformalLensMap:
                 a = np.asarray(lens_map(ρ, α, m_b, β))
                 b = np.asarray(lens_map(ρ, α, m_b, β, False, False))
                 np.testing.assert_array_equal(a, b)
-        a = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 0.75 * np.pi, "lens", False))
-        b = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 0.75 * np.pi, "lens", False, False))
+        a = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 1, 0.75 * np.pi, "lens", False))
+        b = np.asarray(sharp_map(ρ, α, ζ, 2, 2, 1, 0.75 * np.pi, "lens", False, False))
         np.testing.assert_array_equal(a, b)
 
     @pytest.mark.unit

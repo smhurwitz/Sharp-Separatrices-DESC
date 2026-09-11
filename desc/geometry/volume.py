@@ -347,7 +347,8 @@ class GeneralizedFourierZernikeRZToroidalVolume(Volume):
     m_b : int
         poloidal mode number associated with the boundary of the volume
     n_b : int
-        toroidal mode number associated with the boundary of the volume
+        toroidal mode number associated with the boundary of the volume, per field
+        period (ι_b = NFP*n_b/m_b)
     β : float
         Angle of corners for lens mapping method.
     sharp_type : str
