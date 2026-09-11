@@ -11,7 +11,7 @@ from desc.backend import custom_jvp, fori_loop, jit, jnp, sign, jax
 from desc.derivatives import Derivative
 from desc.grid import Grid, _Grid
 from desc.io import IOAble
-from desc.utils import check_nonnegint, check_posint, flatten_list
+from desc.utils import check_nonnegint, check_posint, errorif, flatten_list, warnif
 from scipy.special import hyp2f1
 
 __all__ = [
@@ -1872,6 +1872,141 @@ class GeneralizedFourierZernikeBasis(IOAble, ABC):
         )
 
 
+#: Distance, in the (ρ, α_b) plane, within which a node is treated as sitting *on* a
+#: sharp-map corner, so that requesting a derivative there is an error. Differentiating
+#: through the corner singularity amplifies roundoff like dist^(-n) for an nth
+#: derivative, and below this distance no digit of the result is correct. Measured for
+#: m_b=3, β=0.75π, quasiconformal, taking ∂²/∂ρ∂θ of B_zeta at the α_b=2π/3 corner: the
+#: value has converged to -1.5544 for dist ≳ 1e-6, and reads -1.5470 at 1e-7, -2.9171 at
+#: 1e-8, 42.70 at 1e-9, -2.3e3 at 1e-10 and -2.2e7 at 1e-12.
+SHARP_CORNER_ERROR_DIST = 1e-8
+
+#: Distance within which derivatives near a sharp-map corner are degraded enough to
+#: warrant a warning, but may still be usable. See ``SHARP_CORNER_ERROR_DIST``.
+SHARP_CORNER_WARN_DIST = 1e-6
+
+
+def _sharp_singularity_distances(nodes, m_b, n_b):
+    """Distances from each node to the singularities of the sharp map.
+
+    The sharp map is singular in two places. In both, the map *itself* is well
+    defined and correct -- only its derivatives are affected.
+
+    * The magnetic axis, ρ=0, where ``|L₂|**(2/m_b)`` is a bare 0/0. The derivative
+      is NaN exactly at ρ=0 but accurate at every ρ>0 (verified down to ρ=1e-12),
+      so only an exact hit is a problem and no proximity test is warranted.
+    * The m_b boundary corners, ρ=1 with α_b = θ - n_b ζ/m_b ≡ 0 (mod 2π/m_b). No
+      smooth map carries the smooth unit circle onto a boundary with an interior
+      angle β≠π, so these are a genuine singularity of the map rather than an
+      artifact of the implementation: the first derivatives have different limits
+      along different approach directions and the higher ones diverge.
+      Differentiating through them is ill conditioned in a whole neighbourhood,
+      not just at the point, hence a distance rather than an exact test.
+
+    Parameters
+    ----------
+    nodes : ndarray, shape(num_nodes,3)
+        Node coordinates, in (rho, theta, zeta).
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    n_b : int
+        Toroidal mode number of boundary.
+
+    Returns
+    -------
+    rho : ndarray, shape(num_nodes,)
+        Radial coordinate, i.e. the distance to the magnetic axis.
+    corner_dist : ndarray, shape(num_nodes,)
+        Euclidean distance in the (ρ, α_b) plane to the nearest boundary corner.
+
+    """
+    rho, theta, zeta = np.asarray(nodes, dtype=float).T
+    α_b = theta - n_b * zeta / m_b
+    period = 2 * np.pi / m_b
+    # signed angular offset from the nearest corner angle α_b = 2πk/m_b
+    dα = (α_b + period / 2) % period - period / 2
+    return rho, np.hypot(1 - rho, dα)
+
+
+def _check_sharp_derivative_nodes(nodes, m_b, n_b, derivatives, number):
+    """Error or warn if derivatives are requested at a sharp-map singularity.
+
+    See ``_sharp_singularity_distances`` for where the singularities are and why.
+    This guard replaces an earlier ``ρ → ρ(1-2ε)+ε`` clamp with ε=1e-12, which kept
+    these evaluations from returning NaN but did so by silently reporting the
+    roundoff-amplified value instead -- a corner second derivative whose true
+    directional limits are order 1 came back as 1e8.
+
+    Parameters
+    ----------
+    nodes : ndarray, shape(num_nodes,3)
+        Node coordinates, in (rho, theta, zeta).
+    m_b : int
+        Poloidal mode number of boundary, equals number of ridges.
+    n_b : int
+        Toroidal mode number of boundary.
+    derivatives : ndarray, shape(3,)
+        Order of derivatives to compute in (rho, theta, zeta).
+    number : int
+        Method number for writing the basis functions. ``number=0`` is the plain
+        Fourier-Zernike basis, which never calls the sharp map and so has neither
+        singularity; every other method does.
+
+    """
+    if number == 0:
+        return  # plain Fourier-Zernike: the sharp map is never applied
+    if int(np.sum(np.asarray(derivatives))) == 0:
+        return  # the map is well defined at both singularities; only ∂ are affected
+    if isinstance(nodes, jax.core.Tracer):
+        return  # abstract values under jit: node positions are not inspectable
+    rho, corner_dist = _sharp_singularity_distances(nodes, m_b, n_b)
+    num = rho.size
+    if num == 0:
+        return
+
+    on_axis = rho == 0
+    at_corner = corner_dist < SHARP_CORNER_ERROR_DIST
+    near_corner = ~at_corner & (corner_dist < SHARP_CORNER_WARN_DIST)
+    # errorif/warnif format their message eagerly, so these must be safe when the
+    # corresponding selection is empty
+    closest = corner_dist.min()
+    closest_near = corner_dist[near_corner].min() if np.any(near_corner) else np.nan
+
+    errorif(
+        np.any(on_axis),
+        ValueError,
+        f"Derivatives of the sharp basis are undefined at the magnetic axis: "
+        f"{np.count_nonzero(on_axis)} of {num} nodes are at rho=0, where the map is "
+        f"a bare 0/0 and differentiating returns NaN. Derivatives are accurate at "
+        f"every rho>0, down to rho~1e-12, so it is only the exact hit that fails -- "
+        f"build the grid with axis=False, or offset those nodes off the axis.",
+    )
+
+    errorif(
+        np.any(at_corner),
+        ValueError,
+        f"Derivatives of the sharp basis are undefined at the {m_b} boundary corners "
+        f"(rho=1 with theta - n_b*zeta/m_b = 2*pi*k/{m_b}): "
+        f"{np.count_nonzero(at_corner)} of {num} nodes are within "
+        f"{SHARP_CORNER_ERROR_DIST:g} of one, the closest at {closest:.3e}. "
+        f"The corner is a genuine singularity of the map, not a numerical artifact: "
+        f"the first derivatives approach different limits from different directions "
+        f"and the higher ones diverge, so there is no correct value to return. Offset "
+        f"the poloidal nodes so they miss the corner angles, or evaluate at rho<1.",
+    )
+
+    warnif(
+        np.any(near_corner),
+        UserWarning,
+        f"{np.count_nonzero(near_corner)} of {num} nodes are within "
+        f"{SHARP_CORNER_WARN_DIST:g} of a sharp-map corner, the closest at "
+        f"{closest_near:.3e}. Derivatives there are degraded by "
+        f"roundoff amplified through the corner singularity, losing roughly a decade "
+        f"of accuracy for each decade closer, and the reported value depends on the "
+        f"direction of approach. Move to rho<1 or away from the corner angles.",
+    )
+
+
 class SharpFourierZernikeBasis(_Basis):
     """3D basis set for analytic functions in a toroidal volume.
 
@@ -2159,9 +2294,13 @@ class SharpFourierZernikeBasis(_Basis):
         if not len(modes):
             return np.array([]).reshape((grid.num_nodes, 0))
 
+        # the map is singular at the axis and at the boundary corners; evaluating it
+        # there is fine, differentiating it there is not
+        _check_sharp_derivative_nodes(
+            grid.nodes, self.m_b, self.n_b, derivatives, self.number
+        )
+
         r, t, z = map(jnp.asarray, grid.nodes.T)
-        ε = 1e-12 # to avoid nans evaluating right at boundaries
-        r = r - 2 * r * ε + ε
 
         # requested derivative orders
         dr = int(derivatives[0])

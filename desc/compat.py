@@ -29,7 +29,10 @@ def ensure_positive_jacobian(eq):
             ensure_positive_jacobian(e)
         return eq
 
-    sign = np.sign(eq.compute("sqrt(g)", grid=Grid(np.array([[1, 0, 0]])))["sqrt(g)"])
+    # only the sign is needed, and it is constant over a non-degenerate equilibrium, so
+    # sample an interior node: rho=1, theta=0 is a corner of a SharpEquilibrium, where
+    # the derivatives entering sqrt(g) are singular
+    sign = np.sign(eq.compute("sqrt(g)", grid=Grid(np.array([[0.5, 0, 0]])))["sqrt(g)"])
     errorif(
         sign == 0,
         ValueError,
