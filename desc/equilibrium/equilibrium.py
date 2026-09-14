@@ -3351,6 +3351,23 @@ class SharpEquilibrium(Equilibrium):
         self.iota = parse_profile(iota, "iota")
         self.current = parse_profile(current, "current")
 
+        # The m_b-fold corners rotate poloidally at iota_b = NFP*n_b/m_b (see
+        # SharpEquilibriumGrid.iota_b), so a supplied rotational transform profile
+        # must agree with iota_b at rho=1 or the corners would not lie on the last
+        # closed flux surface.
+        if self.iota is not None:
+            iota_b = self.NFP * self.n_b / self.m_b
+            iota_rho1 = float(np.asarray(self.iota(np.array([1.0]))).squeeze())
+            errorif(
+                not np.isclose(iota_rho1, iota_b, atol=1e-8),
+                ValueError,
+                "iota(rho=1) from the supplied iota profile "
+                f"({iota_rho1}) does not match iota_b = NFP*n_b/m_b "
+                f"({iota_b}, from NFP={self.NFP}, n_b={self.n_b}, m_b={self.m_b}). "
+                "The boundary rotational transform must equal iota_b for the sharp "
+                "corners to lie on a flux surface.",
+            )
+
         # ensure profiles have the right resolution
         for profile in [
             "pressure",
