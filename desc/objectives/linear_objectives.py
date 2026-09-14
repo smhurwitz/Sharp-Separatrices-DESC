@@ -9,6 +9,7 @@ Linear objective functions must be of the form `A*x-b`, where:
 import warnings
 
 import numpy as np
+import scipy.linalg
 from termcolor import colored
 
 from desc.backend import (
@@ -479,10 +480,109 @@ def _generalized_boundary_matrices(basis):
         else:  # standard mode: sum interior standard modes sharing (m, n) at rho=1
             match = (modes[:, 0] >= 0) & (modes[:, 1] == mb) & (modes[:, 2] == nb)
             idx = np.argwhere(match).flatten()
-            A[bi, idx] = zernike_radial(
-                np.ones(idx.size), modes[idx, 0], modes[idx, 1]
-            )
+            A[bi, idx] = zernike_radial(np.ones(idx.size), modes[idx, 0], modes[idx, 1])
     return A, B
+
+
+def xline_constraint_matrix(basis, rcond=1e-10):
+    """Constraint matrix forcing lambda to be constant along each X-line.
+
+    The m_b corners of a sharp boundary are magnetic X-lines and must be field lines.
+    With B^rho = 0 identically, the only content of that condition is
+    B . grad(alpha_b) = 0 on the ridge, which (dropping the corner-singular
+    geometric prefactor and using iota(1) = iota_b) reads
+
+        d(lambda)/d(zeta) |_(alpha_b) = 0  on  rho=1, alpha_b = 2*pi*k/m_b,
+
+    i.e. lambda is constant along each X-line. This is linear in ``L_lmn``.
+
+    The rows are written out in closed form, with no sampling of the ridge. On ridge
+    k, theta = 2*pi*k/m_b + iota_b*zeta, and the trace of a real basis function
+    f_m(theta) g_n(zeta) (``desc.basis.fourier`` conventions, sigma_m = [m >= 0]) is,
+    by the product-to-sum identity,
+
+        1/2 [cos(chi_- + w_- zeta) - cos(chi_+ + w_+ zeta)],
+        w_s = |m| iota_b + s |n| NFP = (NFP/m_b) J_s,   J_s = |m| n_b + s |n| m_b,
+        chi_s = |m| 2 pi k / m_b + (sigma_m + s sigma_n) pi/2,      s = +-1.
+
+    So each mode carries two harmonics of the ridge, and "constant along the ridge"
+    means the cos(|w| zeta) and sin(|w| zeta) coefficients of lambda's trace vanish
+    for every |w| != 0 and every ridge: two real rows per (harmonic, ridge), grouped
+    on the exact integer |J_s|. Harmonics with J_s = 0 (m*n_b == n*m_b, including
+    m = n = 0) are constant on the ridge and stay free.
+
+    Only **values** of the basis on the ridge enter, never its partial derivatives
+    there: the sharp map is the identity on the ridge, so a sharp mode (l<0) and a
+    standard mode (l>=0) with the same (m, n) have the same trace, and only the
+    surface coefficients Lambda_mn = sum_l c_lmn are constrained. The raw rows are
+    then rank-compressed (the m_b ridges duplicate one another when n_b = 1) to a
+    full-rank matrix with orthonormal rows.
+
+    Parameters
+    ----------
+    basis : GeneralizedFourierZernikeBasis
+        The lambda basis of a SharpEquilibrium. ``m_b``, ``n_b`` and ``NFP`` are read
+        from it.
+    rcond : float
+        Relative singular value cutoff used to determine the rank of the constraint.
+
+    Returns
+    -------
+    A : ndarray, shape(r, basis.num_modes)
+        Full-rank matrix with orthonormal rows such that ``A @ L_lmn == 0`` iff lambda
+        is constant along every X-line. The m = n = 0 modes and the helicities
+        resonant with iota_b, cos/sin(m*theta - n*NFP*zeta) with m*n_b == n*m_b,
+        lie in the null space and remain free. (A single real product mode
+        f_m(theta) g_n(zeta) carries both helicities |m|*iota_b +- |n|*NFP, so
+        individual resonant modes other than m = n = 0 are still coupled.)
+
+    """
+    errorif(
+        not isinstance(basis, GeneralizedFourierZernikeBasis),
+        TypeError,
+        "xline_constraint_matrix requires a GeneralizedFourierZernikeBasis, "
+        f"got {type(basis)}.",
+    )
+    modes = np.asarray(basis.modes)
+    m_b, n_b = int(basis.shp_basis.m_b), int(basis.shp_basis.n_b)
+    if modes.shape[0] == 0:
+        return np.zeros((0, 0))
+
+    # All l share the same ridge trace, so work with the distinct (m, n) pairs and
+    # expand back to the full mode set at the end.
+    mn, inv = np.unique(modes[:, 1:], axis=0, return_inverse=True)
+    inv = inv.ravel()
+    P = mn.shape[0]
+    counts = np.bincount(inv, minlength=P).astype(float)
+    a, b = np.abs(mn[:, 0]), np.abs(mn[:, 1])
+    sig_m, sig_n = (mn[:, 0] >= 0).astype(int), (mn[:, 1] >= 0).astype(int)
+    pair = np.arange(P)
+
+    # R[|J|, k, 0/1, p]: cos / sin coefficient of harmonic |J| on ridge k from pair p
+    Jmax = int(a.max() * n_b + b.max() * m_b)
+    R = np.zeros((Jmax + 1, m_b, 2, P))
+    for s in (1, -1):
+        J = a * n_b + s * b * m_b  # w_s = NFP*J/m_b; exact integer, may be negative
+        keep = J != 0  # J == 0: resonant, constant on the ridge, unconstrained
+        for k in range(m_b):
+            chi = a * 2 * np.pi * k / m_b + (sig_m + s * sig_n) * np.pi / 2
+            # -(s/2) cos(chi + w z) = -(s/2) [cos chi cos|w|z - sgn(w) sin chi sin|w|z]
+            R[np.abs(J)[keep], k, 0, pair[keep]] += -(s / 2) * np.cos(chi)[keep]
+            R[np.abs(J)[keep], k, 1, pair[keep]] += (s / 2) * (
+                np.sign(J) * np.sin(chi)
+            )[keep]
+    R = R[1:].reshape(-1, P)  # drop the |J| = 0 slot; unattained |J| rows are zero
+    if R.shape[0] == 0:
+        return np.zeros((0, modes.shape[0]))
+
+    # The full matrix is R @ S with S[p, j] = 1 if mode j has (m, n) pair p. Writing
+    # S = diag(sqrt(counts)) @ S~ with S~ having orthonormal rows, the row space of
+    # R @ S is spanned by V_r @ S~ where V_r are the leading right singular vectors
+    # of R @ diag(sqrt(counts)); those rows are then orthonormal automatically.
+    _, s, Vt = scipy.linalg.svd(R * np.sqrt(counts)[None, :], full_matrices=False)
+    r = int(np.sum(s > rcond * s[0])) if s.size else 0
+    A = Vt[:r][:, inv] / np.sqrt(counts)[inv][None, :]
+    return A
 
 
 def _fix_boundary_indices(eq, eq_basis, coord, modes):
@@ -1200,6 +1300,125 @@ class FixThetaSFL(FixParameters):
             normalize_target=normalize_target,
             name=name,
         )
+
+
+class FixXLine(_Objective):
+    """Fix lambda to be constant along the X-lines of a SharpEquilibrium.
+
+    The m_b sharp corners of the boundary (rho=1, alpha_b = theta - iota_b*zeta =
+    2*pi*k/m_b, iota_b = NFP*n_b/m_b) are magnetic X-lines and must therefore be
+    field lines. Since B^rho = 0 identically, this reduces to B . grad(alpha_b) = 0
+    on each ridge, which with iota(1) = iota_b is
+
+        d(lambda)/d(zeta) |_(alpha_b) = 0,   i.e.  lambda = const along each X-line.
+
+    This is linear in ``L_lmn`` and homogeneous, so it is projected out exactly. Only
+    the non-resonant surface harmonics of lambda are constrained; the m = n = 0 modes
+    (handled by ``FixLambdaGauge``) and the helicities resonant with iota_b
+    (m*n_b == n*m_b) stay free. See ``xline_constraint_matrix`` for the construction.
+
+    Note: this constraint is automatically applied when needed, and does not need to
+    be included by the user.
+
+    Parameters
+    ----------
+    eq : SharpEquilibrium
+        Equilibrium that will be optimized to satisfy the Objective.
+    rcond : float, optional
+        Relative singular value cutoff used to determine the rank of the constraint.
+    name : str, optional
+        Name of the objective function.
+
+    """
+
+    __doc__ = __doc__.rstrip() + collect_docs(
+        overwrite={
+            "target": "",
+            "bounds": "",
+            "normalize": "",
+            "normalize_target": "",
+            "weight": "",
+        }
+    )
+    _scalar = False
+    _linear = True
+    _fixed = False  # not "diagonal": each row is a sum over modes
+    _units = "(rad)"
+    _print_value_fmt = "X-line lambda error: "
+
+    def __init__(
+        self,
+        eq,
+        rcond=1e-10,
+        name="X-line lambda",
+    ):
+        self._rcond = rcond
+        super().__init__(
+            things=eq,
+            target=0,
+            bounds=None,
+            weight=1,
+            normalize=False,
+            normalize_target=False,
+            name=name,
+        )
+
+    @execute_on_cpu
+    def build(self, use_jit=False, verbose=1):
+        """Build constant arrays.
+
+        Parameters
+        ----------
+        use_jit : bool, optional
+            Whether to just-in-time compile the objective and derivatives.
+        verbose : int, optional
+            Level of output.
+
+        """
+        eq = self.things[0]
+        errorif(
+            not isinstance(eq.L_basis, GeneralizedFourierZernikeBasis),
+            TypeError,
+            "FixXLine only applies to a SharpEquilibrium (generalized lambda basis), "
+            f"got {type(eq)}.",
+        )
+        iota_b = eq.NFP * eq.n_b / eq.m_b
+        # lambda = const along the ridge is the X-line condition only when
+        # iota(1) == iota_b; otherwise B.grad(alpha_b) = psi'/(2 pi sqrt(g)) *
+        # (iota(1) - iota_b) != 0 there and no lambda can fix it (integrating
+        # lambda_z + iota_b*lambda_t = iota(1) - iota_b around the closed ridge
+        # gives 0 on the left). SharpEquilibrium always solves at fixed iota (a
+        # fixed-current solve is not supported), so eq.iota is never None here.
+        iota_rho1 = float(np.asarray(eq.iota(np.array([1.0]))).squeeze())
+        errorif(
+            not np.isclose(iota_rho1, iota_b, atol=1e-8),
+            ValueError,
+            f"iota(rho=1) = {iota_rho1} does not match iota_b = NFP*n_b/m_b = "
+            f"{iota_b}; the X-line tangency condition is infeasible unless the "
+            "boundary rotational transform equals iota_b.",
+        )
+        self._A = xline_constraint_matrix(eq.L_basis, rcond=self._rcond)
+        self._dim_f = self._A.shape[0]
+        super().build(use_jit=use_jit, verbose=verbose)
+
+    def compute(self, params, constants=None):
+        """Compute the along-X-line variation of lambda (in the compressed row basis).
+
+        Parameters
+        ----------
+        params : dict
+            Dictionary of equilibrium degrees of freedom, eg Equilibrium.params_dict
+        constants : dict
+            Dictionary of constant data, eg transforms, profiles etc. Defaults to
+            self.constants
+
+        Returns
+        -------
+        f : ndarray
+            X-line tangency errors.
+
+        """
+        return jnp.dot(self._A, params["L_lmn"])
 
 
 class FixAxisR(FixParameters):

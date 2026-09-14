@@ -102,6 +102,8 @@ from .linear_objectives import (
     FixSumModesR,
     FixSumModesZ,
     FixThetaSFL,
+    FixXLine,
     ShareParameters,
+    xline_constraint_matrix,
 )
 from .objective_funs import ObjectiveFunction

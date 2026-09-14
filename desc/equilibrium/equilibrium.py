@@ -42,6 +42,7 @@ from desc.objectives import (
     get_equilibrium_objective,
     get_fixed_axis_constraints,
     get_fixed_boundary_constraints,
+    xline_constraint_matrix,
 )
 from desc.optimizable import Optimizable, optimizable_parameter
 from desc.optimize import LinearConstraintProjection, Optimizer
@@ -2935,10 +2936,15 @@ class SharpEquilibrium(Equilibrium):
         Pressure profile or array of mode numbers and spectral coefficients.
         Default is a PowerSeriesProfile with zero pressure
     iota : Profile or ndarray shape(k,2) (optional)
-        Rotational transform profile or array of mode numbers and spectral coefficients
-    current : Profile or ndarray shape(k,2) (optional)
-        Toroidal current profile or array of mode numbers and spectral coefficients
-        Default is a PowerSeriesProfile with zero toroidal current
+        Rotational transform profile or array of mode numbers and spectral
+        coefficients. Must equal iota_b = NFP*n_b/m_b at rho=1, or the sharp
+        corners would not lie on the last closed flux surface. Default is a
+        constant PowerSeriesProfile equal to iota_b everywhere.
+
+        Note: unlike ``Equilibrium``, ``SharpEquilibrium`` does not accept a
+        ``current`` profile -- it always solves at fixed iota. A fixed-current
+        solve derives iota from force balance with no guarantee it equals
+        iota_b, which would let the corners drift off the rho=1 flux surface.
     electron_temperature : Profile or ndarray shape(k,2) (optional)
         Electron temperature (eV) profile or array of mode numbers and spectral
         coefficients. Must be supplied with corresponding density.
@@ -3081,7 +3087,6 @@ class SharpEquilibrium(Equilibrium):
         N_grid=None,
         pressure=None,
         iota=None,
-        current=None,
         electron_temperature=None,
         electron_density=None,
         ion_temperature=None,
@@ -3094,6 +3099,21 @@ class SharpEquilibrium(Equilibrium):
         ensure_nested=True,
         **kwargs,
     ):
+        # SharpEquilibrium has no ``current`` parameter (see profiles section
+        # below); explicitly allow current=None through (e.g. from code that
+        # copies eq.current, which is always None for a SharpEquilibrium) but
+        # reject any actual current profile.
+        errorif(
+            kwargs.get("current", None) is not None,
+            ValueError,
+            "SharpEquilibrium always solves at fixed iota; a toroidal current "
+            "profile cannot be specified (a fixed-current solve has no "
+            "guarantee that iota(rho=1) will equal iota_b = NFP*n_b/m_b, which "
+            "would let the sharp corners drift off the rho=1 flux surface). "
+            "Pass iota instead, or omit it to use the default constant profile "
+            "iota(rho) = iota_b.",
+        )
+        kwargs.pop("current", None)
         errorif(
             not isinstance(float(Psi), numbers.Real),
             ValueError,
@@ -3311,15 +3331,8 @@ class SharpEquilibrium(Equilibrium):
         self._ion_temperature = None
         self._atomic_number = None
 
-        if current is None and iota is None:
-            current = 0
         use_kinetic = any(
             [electron_temperature is not None, electron_density is not None]
-        )
-        errorif(
-            current is not None and iota is not None,
-            ValueError,
-            "Cannot specify both iota and current profiles.",
         )
         errorif(
             ((pressure is not None) or (anisotropy is not None)) and use_kinetic,
@@ -3347,26 +3360,34 @@ class SharpEquilibrium(Equilibrium):
         self.atomic_number = parse_profile(atomic_number, "atomic number")
         self.pressure = parse_profile(pressure, "pressure")
         self.anisotropy = parse_profile(anisotropy, "anisotropy")
-        self._iota = self._current = None
-        self.iota = parse_profile(iota, "iota")
-        self.current = parse_profile(current, "current")
 
-        # The m_b-fold corners rotate poloidally at iota_b = NFP*n_b/m_b (see
-        # SharpEquilibriumGrid.iota_b), so a supplied rotational transform profile
-        # must agree with iota_b at rho=1 or the corners would not lie on the last
-        # closed flux surface.
-        if self.iota is not None:
-            iota_b = self.NFP * self.n_b / self.m_b
-            iota_rho1 = float(np.asarray(self.iota(np.array([1.0]))).squeeze())
-            errorif(
-                not np.isclose(iota_rho1, iota_b, atol=1e-8),
-                ValueError,
-                "iota(rho=1) from the supplied iota profile "
-                f"({iota_rho1}) does not match iota_b = NFP*n_b/m_b "
-                f"({iota_b}, from NFP={self.NFP}, n_b={self.n_b}, m_b={self.m_b}). "
-                "The boundary rotational transform must equal iota_b for the sharp "
-                "corners to lie on a flux surface.",
-            )
+        # SharpEquilibrium always solves at fixed iota, never fixed current: the
+        # m_b-fold corners rotate poloidally at iota_b = NFP*n_b/m_b (see
+        # SharpEquilibrium.iota_b), and a fixed-current solve derives iota from
+        # force balance with no guarantee it lands on iota_b, which would let the
+        # corners drift off the rho=1 flux surface. self.current is therefore
+        # always None; if the user doesn't supply iota, default to the constant
+        # profile iota(rho) = iota_b, which trivially satisfies the required
+        # boundary value (and is shear-free, a reasonable no-information guess).
+        self._iota = self._current = None
+        if iota is None:
+            iota = self.iota_b
+        self.iota = parse_profile(iota, "iota")
+        self.current = parse_profile(None, "current")
+
+        # A supplied (non-default) iota profile must still agree with iota_b at
+        # rho=1, or the corners would not lie on the last closed flux surface.
+        iota_b = self.iota_b
+        iota_rho1 = float(np.asarray(self.iota(np.array([1.0]))).squeeze())
+        errorif(
+            not np.isclose(iota_rho1, iota_b, atol=1e-8),
+            ValueError,
+            "iota(rho=1) from the supplied iota profile "
+            f"({iota_rho1}) does not match iota_b = NFP*n_b/m_b "
+            f"({iota_b}, from NFP={self.NFP}, n_b={self.n_b}, m_b={self.m_b}). "
+            "The boundary rotational transform must equal iota_b for the sharp "
+            "corners to lie on a flux surface.",
+        )
 
         # ensure profiles have the right resolution
         for profile in [
@@ -3410,6 +3431,10 @@ class SharpEquilibrium(Equilibrium):
             self.L_lmn = kwargs.pop("L_lmn", jnp.zeros(self.L_basis.num_modes))
         else:
             self.set_initial_guess(ensure_nested=ensure_nested)
+        # the boundary corners are X-lines, so lambda must be constant along them
+        # (see FixXLine). The default guess lambda=0 already is; a user-supplied
+        # L_lmn is projected so the equilibrium always starts consistent.
+        self.project_lambda_xline()
         if check_orientation:
             ensure_positive_jacobian(self)
         if kwargs.get("check_kwargs", True):
@@ -3575,6 +3600,8 @@ class SharpEquilibrium(Equilibrium):
         self._R_lmn = copy_coeffs(self.R_lmn, old_modes_R, self.R_basis.modes)
         self._Z_lmn = copy_coeffs(self.Z_lmn, old_modes_Z, self.Z_basis.modes)
         self._L_lmn = copy_coeffs(self.L_lmn, old_modes_L, self.L_basis.modes)
+        # dropping lambda modes can change its trace along the X-lines
+        self.project_lambda_xline()
 
     def get_profile(self, name, grid=None, kind="spline", **kwargs):
         """Return a SplineProfile of the desired quantity.
@@ -4187,7 +4214,76 @@ class SharpEquilibrium(Equilibrium):
     def n_b(self):
         """int: toroidal mode number associated with the boundary of the volume"""
         return self._n_b
-    
+
+    @property
+    def iota_b(self):
+        """float: rotational transform of the sharp boundary, NFP*n_b/m_b.
+
+        The m_b corners rotate poloidally at this rate (theta = 2*pi*k/m_b +
+        iota_b*zeta), so it is the transform of the separatrix and a supplied iota
+        profile must equal it at rho=1.
+        """
+        return self.NFP * self.n_b / self.m_b
+
+    def xline_lambda_error(self, rcond=1e-10):
+        """Along-X-line variation of lambda, which must vanish (see ``FixXLine``).
+
+        Parameters
+        ----------
+        rcond : float
+            Passed to ``desc.objectives.xline_constraint_matrix``.
+
+        Returns
+        -------
+        f : ndarray, shape(r,)
+            ``A @ L_lmn`` with ``A`` from ``xline_constraint_matrix``; zero iff lambda
+            is constant along every X-line.
+
+        """
+        A = xline_constraint_matrix(self.L_basis, rcond=rcond)
+        return A @ np.asarray(self.L_lmn)
+
+    def project_lambda_xline(self, rcond=1e-10):
+        """Project ``L_lmn`` onto lambda = const along each X-line.
+
+        The boundary corners are X-lines and so must be field lines, which requires
+        lambda to be constant along each of them (the condition ``FixXLine``
+        enforces during a solve). The default initial guess lambda = 0 already
+        satisfies it; this removes the along-X-line component when ``L_lmn`` was
+        supplied directly, copied from another equilibrium, or truncated by a
+        resolution change. The m=n=0 gauge modes and the helicities resonant with
+        iota_b (m*n_b == n*m_b) are left untouched.
+
+        Parameters
+        ----------
+        rcond : float
+            Passed to ``desc.objectives.xline_constraint_matrix``.
+
+        Returns
+        -------
+        removed : float
+            Norm of the component of ``L_lmn`` that was removed (0 if lambda was
+            already constant along the X-lines).
+
+        """
+        L_lmn = np.asarray(self.L_lmn)
+        if not np.any(L_lmn):  # lambda = 0 is trivially constant along the ridges
+            return 0.0
+        A = xline_constraint_matrix(self.L_basis, rcond=rcond)
+        f = A @ L_lmn
+        removed = float(np.linalg.norm(f))
+        if removed == 0.0:
+            return removed
+        self.L_lmn = L_lmn - A.T @ f  # rows of A are orthonormal
+        warnif(
+            removed > 1e-10 * np.linalg.norm(L_lmn),
+            UserWarning,
+            "lambda was not constant along the X-lines of this SharpEquilibrium; "
+            f"L_lmn was projected onto the X-line tangency constraint (removed a "
+            f"component of norm {removed:.3e}, |L_lmn| = {np.linalg.norm(L_lmn):.3e}).",
+        )
+        return removed
+
     @property
     def β(self):
          """float: Angle of corners for lens mapping method."""

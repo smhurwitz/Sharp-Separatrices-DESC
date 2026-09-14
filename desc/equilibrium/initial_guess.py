@@ -348,6 +348,9 @@ def set_initial_guess_sharp(eq, *args, ensure_nested=True):  # noqa: C901
             eq.R_lmn = copy_coeffs(eq1.R_lmn, eq1.R_basis.modes, eq.R_basis.modes)
             eq.Z_lmn = copy_coeffs(eq1.Z_lmn, eq1.Z_basis.modes, eq.Z_basis.modes)
             eq.L_lmn = copy_coeffs(eq1.L_lmn, eq1.L_basis.modes, eq.L_basis.modes)
+            # lambda must be constant along the X-lines (see FixXLine); copying
+            # between resolutions can break that, so project it back
+            eq.project_lambda_xline()
 
         elif nargs > 2:  # assume we got nodes and ndarray of points
             raise NotImplementedError("Setting initial shape from points not yet implemented.")

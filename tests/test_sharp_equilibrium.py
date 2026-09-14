@@ -22,13 +22,17 @@ def _standard_modes_seq():
     """A SharpEquilibrium built from purely standard (l >= 0) modes.
 
     With no sharp modes and the same coefficients, this must be numerically identical
-    to the corresponding plain Equilibrium.
+    to the corresponding plain Equilibrium. Both are given the same explicit iota
+    (matching the default volume's m_b=n_b=1 => iota_b=1) so the comparison isolates
+    basis/compute consistency rather than differing profile defaults: Equilibrium
+    defaults to fixed current=0, while SharpEquilibrium always solves at fixed iota
+    (defaulting to iota_b).
     """
     R_lmn = np.array([10.0, 0.0, 1.0])
     Z_lmn = np.array([0.0, -1.0, 0.0])
-    eq = Equilibrium(L=0, M=1, N=0, R_lmn=R_lmn, Z_lmn=Z_lmn)
+    eq = Equilibrium(L=0, M=1, N=0, iota=1.0, R_lmn=R_lmn, Z_lmn=Z_lmn)
     seq = SharpEquilibrium(
-        L=0, M=1, N=0, L_shp=0, M_shp=0, R_lmn=R_lmn, Z_lmn=Z_lmn
+        L=0, M=1, N=0, L_shp=0, M_shp=0, iota=1.0, R_lmn=R_lmn, Z_lmn=Z_lmn
     )
     return eq, seq
 
@@ -260,7 +264,6 @@ def test_sharp_equilibrium_fixed_boundary_solve():
         L_shp=1,
         M_shp=1,
         N_shp=0,
-        current=0,
         ensure_nested=True,
         check_orientation=True,
     )

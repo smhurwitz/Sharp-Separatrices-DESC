@@ -1,5 +1,6 @@
 """Utilities for getting standard groups of objectives and constraints."""
 
+from desc.basis import GeneralizedFourierZernikeBasis
 from desc.utils import errorif, flatten_list, get_all_instances, isposint, unique_list
 
 from ._equilibrium import Energy, ForceBalance, HelicalForceBalance, RadialForceBalance
@@ -28,6 +29,7 @@ from .linear_objectives import (
     FixPressure,
     FixPsi,
     FixSheetCurrent,
+    FixXLine,
 )
 from .nae_utils import (
     calc_zeroth_order_lambda,
@@ -353,6 +355,10 @@ def maybe_add_self_consistency(thing, constraints):
 
     if {"L_lmn"} <= params:
         constraints = add_if_multiple(constraints, FixLambdaGauge)
+        # SharpEquilibrium: the boundary corners are X-lines and must be field
+        # lines, which requires lambda to be constant along each of them.
+        if isinstance(getattr(thing, "L_basis", None), GeneralizedFourierZernikeBasis):
+            constraints = add_if_multiple(constraints, FixXLine)
 
     if {"R_lmn", "Ra_n"} <= params:
         constraints = add_if_multiple(constraints, AxisRSelfConsistency)

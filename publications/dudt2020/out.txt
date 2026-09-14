@@ -1,0 +1,977 @@
+DESC: A Stellarator Equilibrium Solver
+          D. W. Dudt
+                         1,   a) and E. Kolemen1 , b)
+          Princeton University, Princeton, New Jersey 08544
+          (Dated: 24 September 2020)
+          The new code DESC is presented to solve for fixed-boundary ideal MHD equilibria in stellarators. The approach
+          directly solves the equilibrium force balance as a system of nonlinear equations in the form f(x) = 0. The independent
+          variables x represent nested magnetic flux surfaces expressed in the inverse representation with toroidal flux coordinates,
+          and the equations f(x) quantify equilibrium force balance errors at discrete points in real space. Discretizing with global
+          Fourier-Zernike basis functions properly treats the magnetic axis and minimizes the number of coefficients needed to
+          describe the flux surfaces. The pseudospectral method provides great flexibility in where the errors are evaluated, and
+          the system of equations is efficiently solved with a Newton-Raphson iteration. Equilibria are computed and compared
+          against VMEC for both axisymmetric and non-axisymmetric examples. The results show fast convergence rates and
+          solutions with low errors throughout the plasma volume.
+
+
+I. INTRODUCTION                                                      principle4 , and used finite difference approximations in the
+                                                                     discretization of all three spatial coordinates. Chodura and
+A. Equilibrium Problem                                               Schlüter5 proposed to directly solve the equilibrium problem
+                                                                     by minimizing the total potential energy of the plasma on a
+   Magnetic confinement in toroidal devices such as the toka-        space-fixed Eulerian grid. The BETA6 code instead solves the
+mak and stellarator presents the most promising approach to          “inverse” equilibrium problem, which finds the toroidal flux
+controlled nuclear fusion. Optimizing the design and perfor-         coordinates instead of directly solving for the magnetic field.
+mance of these reactors to continue improving their perfor-          The major drawbacks of these approaches are that they as-
+mance relies on fast and accurate numerical calculations of          sume the existence of nested flux surfaces and their accuracy
+the equilibrium plasma state. Under the ideal magnetohydro-          is limited to second-order by the finite difference schemes.
+dynamic (MHD) model, the equilibrium for a static plasma                It was quickly realized that these algorithms could be
+is given by the force balance equation, and Ampère’s and             greatly improved with spectral methods7 . Bhattacharjee, Wi-
+Gauss’s laws:                                                        ley and Dewar8 proposed a variational method with the in-
+                                                                     verse mapping using Fourier series representations of the
+                              J × B = ∇p                      (1a)
+                                                                     poloidal and toroidal angles. The NEAR9 code replaced the
+                              ∇ × B = µ0 J                    (1b)   discretization of Chodura and Schlüter with a similar scheme,
+                               ∇ · B = 0.                     (1c)   and also changed the Eulerian grid to employ a vacuum flux
+                                                                     coordinate system. Similarly, VMEC10 was developed as the
+An equilibrium is a magnetic field B that solves this system of
+                                                                     spectral version of the inverse energy principle used by BETA.
+nonlinear partial differential equations (PDEs), subject to the
+                                                                     This increased the speed and accuracy of calculations, and
+pressure profile p and any additional constraints.
+                                                                     VMEC has become the most widely-adopted stellarator equi-
+   In the axisymmetric case of tokamaks, the resulting Grad-
+                                                                     librium code. However, both of these approaches still use
+Shafranov equation is numerically tractable, and codes have
+                                                                     simple finite differences in their radial discretizations, and are
+been developed to efficiently solve this elliptic PDE1 . Stel-
+                                                                     only first-order accurate at the magnetic axis. Additionally,
+larators are inherently three-dimensional2 (3-D), however, and
+                                                                     the assumption of nested flux surfaces is known to cause is-
+the simplification of an ignorable coordinate cannot be used.
+                                                                     sues at rational surfaces11 .
+Promising experimental results in recent years have led to a
+renewed interest in stellarators3 , and the search for an optimal       Several codes have since been developed to allow for mag-
+design is leading to high-beta configurations with complicated       netic islands and regions of stochastic field-lines, since nested
+geometries. Although there are existing codes for handling           flux surfaces generally do not exist in 3D equilibria. The
+3-D equilibria, they are inadequate for machine learning and         BETA code was modified into BETAS12 to allow for mag-
+real-time applications and for studying the full phase-space of      netic islands, and it also updated to Fourier decompositions
+stellarator configurations.                                          for the angular coordinates. A nonvariational approach is
+                                                                     taken by HINT13 , which introduces artificial resistivity and
+                                                                     viscosity and integrates in time until the plasma has relaxed
+B. Literature Review                                                 to an equilibrium. This code uses a fixed-space Eulerian grid
+                                                                     with second-order accurate finite differences, much like the
+  The first equilibrium codes developed specifically for 3-          approach of Chodura and Schlüter. But unlike most other
+D toroidal geometries were based on the MHD variational              codes which conserve the total magnetic flux inside the torus,
+                                                                     HINT instead solves for currentless stellarator equilibria.
+                                                                        Recognizing that relaxation methods need to resolve small
+a) ddudt@princeton.edu
+                                                                     time scales that slow down convergence, the PIES14 code em-
+b) ekolemen@princeton.edu
+                                                                     ploys a different algorithm: it iteratively calculates the pres-
+                                                                                                                                               2
+
+sure driven current from a magnetic field and then updates that                                                  𝜙
+                                                                                                    𝑍
+field using Ampère’s law. Similar to NEAR and VMEC, PIES                                                                          𝜁
+utilizes a combination of Fourier modes and centered finite
+differences to discretize the volume. SIESTA15 is another it-                          𝑅
+                                                                                                                        𝜌
+erative solver based on the energy principle, which starts from                            𝜙
+                                                                                                                              𝜆
+                                                                                                                                      𝜗
+a perturbed VMEC solution and can handle more complicated                                                               𝜃
+                                                                                                                                          𝑅
+                                                                               𝑍
+field-line behavior than BETAS. This code uses pseudospec-
+                                                                                                                     𝜃 + 𝜆 𝜗, 𝜁 + 𝜗 = 𝜋
+tral techniques and a staggered radial grid to better treat the
+magnetic axis, but the radial mesh is still only second-order
+accurate.
+   SPEC16 allows for complicated field behavior by dividing
+the domain into regions of constant pressure that are sepa-         FIG. 1. Toroidal (R, φ , Z) and straight field-line (ρ, ϑ , ζ ) coordinate
+rated by a discrete number of irrational surfaces, and finite       systems.
+element methods are used to represent the subdomains with
+Fourier and Chebyshev basis functions. The algorithm does
+not solve the MHD force balance with a finite pressure gra-             5. Collocation points can be chosen to avoid rational sur-
+dient, it requires discontinuous inputs that may not represent             faces, where the assumption of nested flux surfaces is
+realistic profiles, and it does not properly resolve the magnetic          not valid.
+axis.
+                                                                        6. The system of equations can be solved with a Newton-
+                                                                           Raphson method, which convergences quadratically in
+C. Benets of a New Method                                                 the neighborhood of the solution.
+
+                                                                        7. Unlike the energy principle, it is trivial to find neigh-
+   Despite the progress in this field, there is still demand for
+                                                                           boring solutions and vary quantities of interest to locate
+an equilibrium code that is fast, accurate, and flexible for
+                                                                           solution branches once an equilibrium is calculated.
+many secondary applications. This paper presents a new code,
+called DESC, that aims to fulfill this need by directly solv-       These numerical methods allow this approach to maximize
+ing the equilibrium equations in the most efficient manner          computational speed and accuracy, and they yield significant
+while also providing a useful format for stellarator optimiza-      performance improvements over existing codes.
+tion. The approach is currently formulated for fixed-boundary
+problems, but will be extended to free-boundary equilibria.
+Like VMEC, nested flux surfaces are assumed to exist. Al-           II. DERIVATION OF PROBLEM FORMULATION
+though this assumption is rarely true for real plasmas, it pro-
+vides crucial simplifications and ensures that any solution will
+                                                                    A. Magnetic Field in Toroidal Flux Coordinates
+be of practical interest for good confinement. Rather than
+minimizing the total energy of the plasma, the MHD equi-
+librium equations are solved in the form of a nonlinear system         The toroidal flux coordinate system (ρ, ϑ , ζ ) is depicted in
+f(x) = 0, where the output f(x) corresponds to the force bal-       Figure 1. This is very similar to the coordinate system used
+ance error at discrete points in physical space and must vanish     by the stability code PEST17 , except that the toroidal angle
+in equilibrium. The potential advantages of this approach are       is chosen as ζ = −φ so that the coordinate system is right-
+numerous:                                                           handed when the straight field-line poloidal angle ϑ is mea-
+                                                                    sured counter-clockwise from the outboard midplane. The co-
+   1. Solving the force balance equations directly in real          variant basis vectors are defined by eα = [∂α R, ∂α φ , ∂α Z]T ,
+                                                                                                                 √
+      space, instead of indirectly through the energy princi-       and the Jacobian of the coordinate system is g = eρ ·eϑ ×eζ .
+      ple, guarantees low residual force errors throughout the
+                                                                                                                p
+                                                                    The flux surface label is chosen to be ρ = ψ/ψa where ψa
+      plasma volume.                                                is the toroidal magnetic flux at the last closed flux surface,
+                                                                    so that ρ is proportional to the minor radius. Note that this
+   2. Pseudospectral methods minimize the dimensionality            choice differs from the default radial coordinate in VMEC of
+      of the system, so similar levels of accuracy can be           ψ/ψa , which results in a lower density of flux surfaces near
+      achieved with fewer variables compared to finite dif-         the magnetic axis and can affect its resolution accordingly.
+      ference and finite element techniques.
+                                                                       Any vector, including the magnetic field, can be written in
+   3. Global basis functions give the solution everywhere in        contravariant form as
+      the domain, unlike finite difference methods that are
+                                                                                           B = Bρ eρ + Bϑ eϑ + Bζ eζ .                        (2)
+      only defined at discrete surfaces.
+
+   4. Fourier-Zernike basis functions are used to inherently        Under the assumption that nested flux surfaces exist B · ∇ρ =
+      satisfy the necessary conditions at the coordinate singu-     Bρ = 0, so the representation reduces to B = Bϑ eϑ + Bζ eζ .
+      larity, so the magnetic axis is properly resolved.            Bϑ and Bζ are not independent but are related through (1c) by
+                                                                                                                                     3
+
+                                                                     B. Force Balance Equations
+                                1 ∂α
+                        Bϑ = − √                             (3a)      Combining (1a) and (1b), a force balance error F can be
+                                 g ∂ζ
+                                                                     defined as
+                              1 ∂α
+                        Bζ = √                               (3b)
+                               g ∂ϑ                                                       1
+                                                                                     F≡      (∇ × B) × B − ∇p = 0,                (10)
+                                                                                          µ0
+where α(ρ, ϑ , ζ ) is some stream function. This leads to the
+Clebsch representation
+                                                                     and the equilibrium magnetic field must satisfy this equation.
+                    B = ∇ρ × ∇α(ρ, ϑ , ζ )                    (4)    Substituting the form of the field from (8) into the force bal-
+                                                                     ance error (10) yields10
+which reveals that magnetic field-lines lie on surfaces of con-
+stant ρ (flux surfaces) and surfaces of constant α. Equations           F = Fρ ∇ρ + Fβ β                              (11a)
+(2)-(4) could describe magnetic surfaces in any toroidal coor-              √  ζ ϑ           
+dinate system with arbitrary angle definitions, but ϑ and ζ are        Fρ = g B J − Bϑ J ζ − p0                       (11b)
+chosen to be straight field-line coordinates. Since the toroidal
+                                                                             1                                     
+                                                                                Bζ ∂ζ Bρ − ∂ρ Bζ − Bϑ ∂ρ Bϑ − ∂ϑ Bρ − p0
+                                                                                                                  
+angle is fixed as ζ = −φ , this necessitates a particular defini-         =
+tion for ϑ . The function                                                   µ0
+                                                                            √        1                 
+                  θ (ϑ , ζ ) = π − ϑ − λ (ϑ , ζ )             (5)      Fβ = gJ ρ =       ∂ϑ Bζ − ∂ζ Bϑ                (11c)
+                                                                                     µ0
+is used to relate the straight field-line angle ϑ to a more gen-        β = Bζ ∇ϑ − Bϑ ∇ζ .                                      (11d)
+eral poloidal angle θ , such as one that demarks constant arc
+lengths. λ is a periodic function of both ϑ and ζ with zero            This reveals that there are only two independent compo-
+average over a flux surface, and the factor of π is necessary to     nents of the force balance error F: a radial component Fρ and
+convert between the clockwise and counter-clockwise direc-           a helical component denoted Fβ . These vector components
+tions.                                                               can be written as a system of two scalar equations that repre-
+   The “straightness” of the (ρ, ϑ , ζ ) coordinate system is sat-   sent the total force error (in Newtons) in a volume of plasma:
+isfied with the following choice for the stream function18 :
+                                  1                                                  √
+                                    ψ 0ϑ − χ 0ζ .
+                                               
+                α(ρ, ϑ , ζ ) =                                (6)
+                                                                                                               
+                                 2π                                    fρ = Fρ k∇ρk2 g∆ρ∆ϑ ∆ζ sign ∇ρ · eρ                 (12a)
+                                                                                    √                                   
+Here ψ(ρ) and χ(ρ) are the toroidal and poloidal magnetic              fβ = Fβ kβ k2 g∆ρ∆ϑ ∆ζ sign (β · eϑ ) sign β · eζ . (12b)
+flux, respectively, and the prime denotes a derivative with re-
+spect to ρ. Therefore the equation for a magnetic field-line         See Appendix A for a complete derivation of these equations
+on the flux surface ρ = ρ0 is ϑ − ι-ζ = constant, which is the       and their special treatment at the magnetic axis. Equations
+desired equation of a straight line with a slope equal to the        (10)-(12) are expressed in terms of the magnetic field, but the
+rotational transform:                                                only independent variables are R and Z as they appear in the
+                                                                     covariant basis vectors. Therefore, given the shapes of the
+                             dϑ  Bϑ  χ0                              flux surfaces in the plasma volume, R(ρ, ϑ , ζ ) and Z(ρ, ϑ , ζ ),
+                   ι-(ρ) =      = ζ = 0.                      (7)
+                             dζ  B   ψ                               the force balance errors fρ (ρ, ϑ , ζ ) and fβ (ρ, ϑ , ζ ) can be
+Combining (2)-(7) yields an expression for the magnetic field        computed throughout the domain. Both of these equations
+with nested flux surfaces in contravariant form of the straight      must vanish in equilibrium.
+field-line coordinate system:
+                                     ψ0           
+                                                                     III. NUMERICAL METHODS
+           B = Bϑ eϑ + Bζ eζ =        √ ι-eϑ + eζ             (8)
+                                    2π g
+   This formulation reveals the well known principle that               Pseudospectral methods are employed to solve the equilib-
+magnetic field-lines constitute a one-and-a-half-degree-of-          rium force balance PDE given by (12). This approach is cho-
+freedom Hamiltonian system19 . The canonical position, mo-           sen over finite element or finite difference methods because
+mentum, and time become ϑ , ψ, and ζ , respectively, in the          global basis functions converge exponentially. In other words,
+magnetic coordinate system (ψ, ϑ , ζ ). When toroidal flux           spectral methods can achieve lower errors for the same dimen-
+surfaces exist, the Hamiltonian χ(ψ) is a flux surface quan-         sionality or reach comparable accuracy with fewer degrees
+tity, and Hamilton’s equations become:                               of freedom, at least for regular domains20 . The term “pseu-
+                                                                     dospectral” is used to indicate that the equations are forced
+                       dϑ   ∂χ                                       to vanish at a set of collocation points. The loss in accuracy
+                          =    = ι-                          (9a)
+                       dζ   ∂ψ                                       compared to Galerkin methods is typically negligible at high
+                       dψ    ∂χ                                      resolutions, and pseudospectral methods are much simpler to
+                          =−    = 0.                         (9b)
+                       dζ    ∂ϑ                                      implement20 .
+                                                                                                                                                     4
+
+A. Spatial Discretization
+
+  A Fourier-Zernike21–25 basis set is used with “fringe”
+indexing26,27 of the form:
+                     N       M
+   R(ρ, ϑ , ζ ) =    ∑ ∑ ∑ Rlmn Zlm (ρ, ϑ )F n (ζ )                     (13a)
+                    n=−N m=−M l∈L
+                     N       M
+   Z(ρ, ϑ , ζ ) =    ∑ ∑ ∑ Zlmn Zlm (ρ, ϑ )F n (ζ )                     (13b)
+                    n=−N m=−M l∈L
+
+where L = |m|, |m| + 2, |m| + 4, . . . , 2M − |m|. The standard
+indexing scheme was also tested, but the fringe indices were
+determined to be more efficient. F n (ζ ) is the toroidal Fourier
+series defined as
+                      (
+                       cos(|n|NFP ζ ) for n ≥ 0
+             F (ζ ) =
+               n
+                                                            (14)
+                       sin(|n|NFP ζ ) for n < 0
+where NFP is the number of field periods of the device (dis-
+crete toroidal symmetry). Zl m (ρ, ϑ ) are the Zernike polyno-
+mials defined on the unit disc 0 ≤ ρ ≤ 1, ϑ ∈ [0, 2π) as
+                   (
+                       |m|
+                     Rl (ρ) cos(|m|ϑ ) for m ≥ 0
+      Zl (ρ, ϑ ) =
+        m
+                       |m|                                (15)
+                     Rl (ρ) sin(|m|ϑ ) for m < 0
+with the radial function
+             (l−|m|)/2
+   |m|                               (−1)s (l − s)!
+Rl (ρ) =       ∑                                                      ρ l−2s .   FIG. 2. First nine Zernike polynomials in the fringe ordering, depict-
+               s=0       s![ 21 (l + |m|) − s]![ 12 (l − |m|) − s]!
+                                                                                 ing the basis functions used for resolution M = 2.
+                                                        (16)
+Zernike polynomials are orthogonal on the unit disc with the
+inner product
+                                                                                 B. Boundary Condition: Magnetic Axis
+         D    E Z 2π Z 1
+          A, B =           A(ρ, ϑ )B(ρ, ϑ )ρdρdϑ ,      (17)
+                         0       0                                                  When an analytic function is expanded near the origin of
+and the normalization is chosen such that                                        a disc, the resulting polynomial-Fourier expansion must obey
+              D               E 2(l + 1)δ 0 δ 0                                  a certain structure28 . Suppose the function f (ρ, ϑ ) in polar
+                            0            ll mm
+                Zl m , Zl m
+                          0    =                                         (18)    coordinates is expanded in a real Fourier series as
+                                  π(1 + δm0 )
+                                                                                                 ∞                        ∞
+where δi j is the Kronecker delta. The Zernike polynomials for                       f (x, y) = ∑ am (ρ) cos(mϑ ) + ∑ bm (ρ) sin(mϑ )             (19)
+M = 2 are depicted in Figure 2.                                                                m=0                       m=0
+   For computation, the Fourier-Zernike series is truncated at
+a poloidal resolution M and a toroidal resolution N. The max-                    where x = ρ cos ϑ and y = ρ sin ϑ . It was proved by Lewis and
+imum radial resolution is then ρ 2M as dictated by the Zernike                   Bellan30 that the radial parity of the Fourier coefficients and
+polynomials. An advantage of the Zernike polynomials is                          their nonsingularity at the origin implies the following form
+that the number of basis functions scales as M 2 /2, meaning                     for the radial functions:
+it can achieve the same accuracy with about half of the terms
+that would be necessary in other methods that scale as M 2 ,                            am (ρ) = ρ m (am,0 + am,2 ρ 2 + am,4 ρ 4 + . . .)       (20a)
+such as the popular Chebyshev-Fourier basis28 . A benefit                               bm (ρ) = ρ m (bm,0 + bm,2 ρ 2 + bm,4 ρ 4 + . . .).      (20b)
+of the global spectral discretization is that (13a-13b) can be
+interpolated anywhere in the domain ρ ∈ [0, 1], ϑ ∈ [0, 2π),                        The variables R and Z are physical quantities representing
+ζ ∈ [0, 2π). Additionally, all partial derivatives of R and                      the locations of flux surfaces, and therefore the scalar func-
+Z are known analytically by differentiating the basis func-                      tions R(ρ, ϑ , ζ ) and Z(ρ, ϑ , ζ ) must be analytic everywhere
+tions. Interpolation and/or differentiation therefore reduces to                 in the toroidal domain. The Fourier-Zernike basis described
+simple matrix multiplication of the spectral coefficients, and                   by (13a-13b) inherently satisfies the conditions of (19-20),
+the appropriate Vandermonde matrices can be pre-computed.                        so no special treatment is needed to represent the location of
+Horner’s method29 is used to evaluate the polynomials rather                     the magnetic axis at ρ = 0. This is an advantage over other
+than the Zernike recurrence relations, since this was found to                   discretizations that must impose boundary conditions to meet
+be more numerically stable at low values of ρ.                                   these criteria.
+                                                                                                                                        5
+
+C. Boundary Condition: Last Closed Flux Surface                      coefficients from (24a-24b) are then used to provide boundary
+                                                                     conditions on the coefficients in (13a-13b). Noting that the ra-
+                                                                                                              |m|
+  For a fixed-boundary equilibrium, the surface of the plasma        dial component of the Zernike basis Rl (ρ = 1) = 1 for all
+boundary is input as a double Fourier series of the form:            l, m, the explicit boundary conditions are
+                    N    M
+  Rb (θ , φ ) =     ∑ ∑ Rbmn Gnm (θ , φ )                   (21a)                              ∑ Rlmn = R̃bmn                       (25a)
+                   n=−N m=−M                                                                  l∈L
+                    N    M                                                                                b
+  Z b (θ , φ ) =         b
+                    ∑ ∑ Zmn Gnm (θ , φ )                    (21b)                              ∑ Zlmn = Z̃mn .                     (25b)
+                                                                                               l∈L
+                   n=−N m=−M
+                
+                 cos(|m|θ ) cos(|n|NFP φ )     for m ≥ 0, n ≥ 0
+                                                                     This ensures that R(ρ = 1, ϑ , ζ ) and Z(ρ = 1, ϑ , ζ ) will match
+                
+                
+                
+                cos(|m|θ ) sin(|n|N φ )
+                                    FP         for m ≥ 0, n < 0      the surface given by Rb (θ , φ ) and Z b (θ , φ ), up to the provided
+ Gnm (θ , φ ) =
+                
+                sin(|m|θ ) cos(|n|NFP φ )     for m < 0, n ≥ 0      spectral accuracy.
+                
+                 sin(|m|θ ) sin(|n|NFP φ )     for m < 0, n < 0.
+                
+                                                                        The full Fourier-Zernike basis set defined in (13a-13b) re-
+                                                             (21c)   quires (M + 1)2 (2N + 1) total coefficients, but (25a-25b) pro-
+                                                                     vides constraint equations to determine (2M + 1)(2N + 1)
+The parameterization in (21a-21b) determines the poloidal an-        of those coefficients. Similarly, there are a total of (2M +
+gle θ . The boundary inputs used in Section IV give an angle         1)(2N + 1) coefficients in the double Fourier basis of (22), but
+measured clockwise from the inboard midplane as shown in             one is dependent on the others through (23). Instead of using a
+Figure 1, but this does not have to be the case in general. This     spectral tau method where these boundary conditions provide
+angle θ used to define the boundary surface is related to the        additional equations to be solved20 , the constraints are explic-
+straight field-line angle ϑ through λ (ϑ , ζ ) as defined in (5).    itly enforced. For example, R is only given by coefficients up
+The stream function λ is given by the double Fourier series          to order M − 1 in (13a) and the other coefficients are set to
+                    N    M                                           ensure that (25a) is satisfied to order M. This approach is cho-
+   λ (ϑ , ζ ) =     ∑ ∑ λmn Gnm (ϑ , ζ )                    (22a)    sen over the tau method because it reduces the total number
+                   n=−N m=−M                                         of independent variables and eliminates the need to normal-
+                
+                cos(|m|ϑ ) cos(|n|NFP ζ )     for m ≥ 0, n ≥ 0      ize boundary equations relative to the force balance equations.
+                
+                                                                    Combining the spectral representations for R, Z, and λ , it re-
+                cos(|m|ϑ ) sin(|n|N ζ )
+                                    FP         for m ≥ 0, n < 0      quires a total of (2M 2 +2M +1)(2N +1)−1 variables to com-
+ Gnm (ϑ , ζ ) =
+                
+                sin(|m|ϑ ) cos(|n|NFP ζ)      for m < 0, n ≥ 0      pletely describe an equilibrium configuration. This scaling of
+                
+                 sin(|m|ϑ ) sin(|n|NFP ζ )     for m < 0, n < 0      4M 2 N variables is a factor of 3 lower than the ∼ 12M 2 N vari-
+                
+                                                            (22b)    ables used by the VMEC discretization, assuming M flux sur-
+                                                                     faces are used in the VMEC calculation (typically it is much
+along with the constraint                                            higher). These savings can be attributed to the proper treat-
+                                                                     ment of the boundary conditions at the magnetic axis. There
+                              N       M
+                                                                     are implicit constraint equations caused by the coordinate sin-
+                              ∑ ∑ λmn = 0                    (23)
+                                                                     gularity that VMEC must account for but are inherently satis-
+                          n=0 m=0
+                                                                     fied by the Zernike basis functions, as explained in the previ-
+which ensures that λ (0, 0) = 0 in order to fix the gauge free-      ous section.
+dom of the coordinate angles. λ is used in a similar way by
+VMEC to convert arbitrary poloidal coordinates to the straight
+field-line angle, but in this context λ is only defined at the
+plasma boundary (ρ = 1).
+   Using λ to convert from θ to ϑ and recalling that φ = −ζ          D. Stellarator Symmetry
+by definition, the boundary can be rewritten as a Fourier series
+in the straight-field line coordinates:
+                                                                        All current and planned stellarator experiments exhibit stel-
+                                  N       M                          larator symmetry, and this option can be used to simplify the
+             Rb (ϑ , ζ ) =     ∑ ∑ R̃bmn Gnm (ϑ , ζ )       (24a)    Fourier-Zernike basis set. Stellarator symmetry is defined as32
+                              n=−N m=−M
+                                  N       M
+             Z b (ϑ , ζ ) =          b
+                               ∑ ∑ Z̃mn Gnm (ϑ , ζ ).       (24b)
+                              n=−N m=−M                                               R(ρ, −ϑ , −ζ ) = R(ρ, ϑ , ζ )                (26a)
+                                                                                      Z(ρ, −ϑ , −ζ ) = −Z(ρ, ϑ , ζ )               (26b)
+The nonlinear transformation from Rbmn and Zmn    b to R̃b and
+                                                         mn
+  b
+Z̃mn is performed in the standard pseudospectral practice of in-
+terpolation to real space followed by a Fourier transform, with      and implies “up-down” symmetry in the ζ = 0 plane33 . The
+the “three-halves rule” used to prevent spectral aliasing31 . The    symmetric variables can be written in a double Fourier series
+                                                                                                                                       6
+
+of the form                                                          E. Nonlinear System Solver
+
+       R(ρ, ϑ , ζ ) = ∑ Rmn (ρ) cos(mϑ − nNFP ζ )           (27a)       The system of nonlinear equations given by (12) can be
+                          m,n                                        written in the form f = f(x), where x = [Rlmn , Zlmn , λmn ]T is the
+       Z(ρ, ϑ , ζ ) = ∑ Zmn (ρ) sin(mϑ − nNFP ζ )           (27b)    state vector that describes the flux surfaces and f = [ fρi , fβi ]T
+                          m,n                                        contains the force balance errors at a set of collocation points
+          λ (ϑ , ζ ) = ∑ λmn sin(mϑ − nNFP ζ ).             (27c)    with index i. Since fρ and fβ represent the independent com-
+                          m,n                                        ponents of F weighted by volume elements, it follows that
+                                                                     the L1 -norm of f(x) is a numerical approximation to the total
+Using Ptolemy’s identities and truncating to a finite series, this   force balance error in the plasma volume:
+is equivalent to                                                                    Z 2π Z 2π Z 1
+                                                                                                                   √
+                                                                        kf(x)k1 ≈                   kF(ρ, ϑ , ζ )k1 gdρdϑ dζ .      (31)
+                           −1         −1                                             0    0     0
+       R(ρ, ϑ , ζ ) =      ∑ ∑ Rmn (ρ)Gnm (ϑ , ζ )          (28a)
+                                                                     Therefore f(x) = 0 implies that F(ρ, ϑ , ζ ) = 0, and the corre-
+                          n=−N m=−M
+                          N       M                                  sponding solution x must represent the equilibrium flux sur-
+                     + ∑ ∑ Rmn (ρ)Gnm (ϑ , ζ )                       faces.
+                         n=0 m=0                                        Solving high-dimensional nonlinear systems can be compu-
+                           −1 M                                      tationally challenging: solutions are not always guaranteed to
+       Z(ρ, ϑ , ζ ) =      ∑ ∑ Zmn (ρ)Gnm (ϑ , ζ )          (28b)    exist and global convergence often depends strongly on a good
+                          n=−N m=0                                   initial guess. There is an extensive field of literature on com-
+                          N       −1                                 putation methods for these types of problems, but the most
+                     +∑           ∑ Zmn (ρ)Gnm (ϑ , ζ )              popular and robust algorithms are variants of the Newton-
+                         n=0 m=−M
+                                                                     Raphson method29 . In this iterative procedure, the state vector
+                           −1         M
+                                                                     is updated according to xk+1 = xk + ∆x where the search di-
+          λ (ϑ , ζ ) =     ∑ ∑ λmn Gnm (ϑ , ζ )             (28c)
+                                                                     rection is defined as
+                          n=−N m=0
+                                  −1
+                          N
+                                                                                                  !
+                                                                                            ∂f
+                     +∑           ∑ λmn Gnm (ϑ , ζ )                                       ∂ x xk
+                                                                                                    ∆x = −f(xk ).                 (32)
+                         n=0 m=−M
+
+
+where Gnm (ϑ , ζ ) was defined in (22b). When the radial co-         The superiority of Newton root-finding algorithms is that they
+ordinate is incorporated into the Zernike polynomials, the           can achieve at least quadratic convergence in the neighbor-
+Fourier-Zernike basis sets for R and Z assuming stellarator          hood of the solution. This is a substantial advantage over other
+symmetry are                                                         approaches such as the steepest-descent method performed by
+                                                                     VMEC to minimize the potential energy of the plasma.
+                     −1         −1
+   R(ρ, ϑ , ζ ) =    ∑ ∑ ∑ Rlmn Zlm (ρ, ϑ )F n (ζ )         (29a)
+                                                                     F. Collocation Nodes
+                    n=−N m=−M l∈L
+                     N    M
+              + ∑ ∑ ∑ Rlmn Zl m (ρ, ϑ )F n (ζ )                         The force balance equations f(x) are solved at discrete
+                    n=0 m=0 l∈L
+                                                                     points in real space, and there is a lot of flexibility in choos-
+                     −1       M
+                                                                     ing these interpolation points. The stencil used by the Fast
+   Z(ρ, ϑ , ζ ) =    ∑ ∑ ∑ Zlmn Zlm (ρ, ϑ )F n (ζ )         (29b)
+                                                                     Fourier Transform is equally spaced in ζ ∈ [0, 2π) and this
+                    n=−N m=0 l∈L
+                                                                     provides a natural choice for the toroidal grid. An optimal
+                     N     −1
+                                                                     sampling pattern in the polar (ρ, ϑ ) domain is unknown for
+              +∑          ∑ ∑ Zlmn Zlm (ρ, ϑ )F n (ζ ).              the Zernike basis, but sets have been discovered that min-
+                    n=0 m=−M l∈L
+                                                                     imize the condition number of the resulting Vandermonde
+                                                                     matrix34,35 . Arranging the nodes into M + 1 concentric cir-
+   Stellarator symmetry reduces the total number of coeffi-
+                                                                     cles with 2m + 1 equally spaced points on each ring m for
+cients exactly in half compared to the general case, so the
+                                                                     m = 0, . . . , M helps ensure a uniform distribution of sampling
+number of variables required to describe an equilibrium scales
+                                                                     points throughout the domain. The radial locations displayed
+as 2M 2 N (compared to a similar VMEC dimension of ∼
+                                                                     in Figure 3 are the Chebyshev-Gauss-Lobatto nodes20 (the
+6M 2 N). Since the force balance equations defined in (12) are
+                                                                     extrema of Chebyshev polynomials of the first kind) scaled
+functions of R and Z, they also exhibit symmetries when stel-
+                                                                     to the domain ρ ∈ [0, 1]36 . Alternatively, these nodes could
+larator symmetry is enforced on the inputs:
+                                                                     have been chosen to avoid rational surfaces or grouped into
+                                                                     regions of the plasma volume where more resolution is de-
+                fρ (ρ, −ϑ , −ζ ) = fρ (ρ, ϑ , ζ )           (30a)    sired. The radial force balance equation fρ is a function of
+                fβ (ρ, −ϑ , −ζ ) = − fβ (ρ, ϑ , ζ ).        (30b)    second derivatives in the radial coordinate such as ∂ρρ R and
+                                                                                                                                        7
+
+                                                                           the tokamak case and 12 poloidal and toroidal Fourier modes
+        1   a                               b
+                                                                           for the heliotron. Stellarator symmetry was assumed by both
+                                                                           VMEC and DESC for all computations. The integral of the
+                                                                           force balance error was also numerically approximated using
+ sin    0
+                                                                   f
+                                                                   f
+                                                                           a set of interpolation points. For both error metrics and both
+                                                                   f &f
+                                                                           test cases, the errors were sampled at thousands of locations
+                                                                           throughout the plasma volume and were different from the set
+                                                                           of collocation nodes.
+       -1
+                                                                              The initial guess for the Newton iteration in both cases was
+            -1       0
+                    cos
+                                    1       -1       0
+                                                    cos
+                                                               1           obtained by scaling the boundary surface proportional to ρ
+                                                                           and setting λ (ϑ , ζ ) = 0. Lower resolution solutions were
+                                                                           then used as the initial guesses for higher resolution calcu-
+FIG. 3. Interpolation points in the (ρ, ϑ ) domain used for the spectral   lations. A Levenberg-Marquardt37–39 algorithm was applied,
+resolution M = 6: (a) stellarator symmetry grid (b) non-symmetric          which combines the Newton search direction with the steep-
+grid.                                                                      est descent direction to improve convergence. The stopping
+                                                                           criteria was a minimum step size of k∆xk2 ≤ 10−4 .
+∂ρρ Z, which cannot be properly computed at the boundary
+ρ = 1. To avoid numerical issues associated with these val-
+                                                                           A. Axisymmetry
+ues, the grid only evaluates the helical component of the error
+ fβ on the last closed flux surface, which does not require these
+higher derivatives.                                                         The “high-beta, D-shaped plasma” is used as an axisym-
+   For a general equilibrium calculation, a grid such as the               metric test case. The fixed boundary and profile inputs are
+one pictured in Figure 3b would be used at 2N + 1 toroidal
+cross-sections equally spaced in the range ζ ∈ [0, 2π/NFP ).
+The use of points with similar (ρ, ϑ ) coordinates allows for                            Rb = 3.51 − cos θ + 0.106 cos 2θ
+efficient vectorized computations. If stellarator symmetry is                            Z b = 1.47 sin θ + 0.16 sin 2θ
+enforced, half of these nodes are redundant and the set of col-
+location points can be reduced. In the symmetric case only                                 ι- = 1 − 0.67ρ 2
+N + 1 toroidal angles are used in the range ζ ∈ [0, π/NFP ),                              p = 1.65 × 103 (1 − ρ 2 )2
+and the half-grid depicted in Figure 3a is used in the ζ = 0                             ψa = 1
+plane. Note that fρ and fβ are sampled on different grids in
+this cross-section to exploit their unique symmetries. These               which correspond to a tokamak with a volume-averaged beta
+interpolation nodes are used to calculate the numerical exam-              of approximately 3%. The equilibrium flux surfaces calcu-
+ples in Section IV.                                                        lated with a resolution of M = 18 are plotted and compared
+                                                                           to the VMEC solution in Figure 4. The corresponding force
+                                                                           balance error is displayed in Figure 5 and normalized to the
+IV. NUMERICAL EXAMPLES
+                                                                           value of k∇p(ρ = 0.5)k2 . The error is less than 1% through-
+                                                                           out the majority of the plasma volume, with most of the error
+   Numerical results of equilibria are presented to validate the           concentrated near the edge where the plasma boundary is pre-
+described method. Two test cases are shown, which are the                  scribed. Figure 6 gives the error metrics, which both display
+same examples also used in the original VMEC paper by Hir-                 strong convergence rates as M is increased. A toroidal resolu-
+shman and Whitson in 1983. The first is an axisymmetric,                   tion of N = 0 is used for all axisymmetric calculations since
+high-beta, D-shaped plasma, and the second is a high-beta he-              higher modes are unnecessary.
+liotron configuration. Both examples have realistic pressure
+profiles and rotational transforms that include low-order ra-
+tional surfaces.
+                                                                           B. Non-axisymmetry
+   Two error metrics are defined to quantify the accuracy of
+solutions:
+                                                                              The “high-beta heliotron” is used as a non-axisymmetric
+                 εX = hk[∆Ri , ∆Zi ]T k2 i                         (33a)   test case, with the fixed boundary and profile inputs:
+                          Z 2π Z 2π Z 1
+                                                 √
+                 εF =                        kFk2 gdρdϑ dζ .       (33b)                Rb = 10 − cos θ − 0.3 cos(θ − 19φ )
+                           0    0       0
+                                                                                        Z b = sin θ − 0.3 sin(θ − 19φ )
+Here ∆Ri and ∆Zi are the differences in flux surfaces relative
+to a VMEC equilibrium, and the bracket denotes the mean                                  ι- = 1.5ρ 2 + 0.5
+over the set of points with index i. The VMEC solutions used
+                                                                                         p = 3.4 × 103 (1 − ρ 2 )2
+for comparison were computed with 256 flux surfaces and a
+residual tolerance of 10−16 , with 18 poloidal Fourier modes in                         ψa = 1.
+                                                                                                                                              8
+
+
+                                                                                10 -1                                            10 5
+                                                      VMEC
+                                                      DESC
+
+
+          1
+
+
+
+
+                                                                          [m]                                                           [N]
+                                                                           X    10 -2                                            10 4    F
+Z [m]     0
+
+
+
+
+         -1
+
+                                                                                10 -3                                            10 3
+                                                                                        6   8   10      12     14      16      18
+                                                                                                        M
+              2             3                 4          5
+                                  R [m]
+                                                                      FIG. 6. Convergence plot for the tokamak equilibrium as a function
+                                                                      of the Zernike resolutions M. εX (black) is the average distance be-
+FIG. 4. High-beta, D-shaped tokamak equilibrium. Solid lines show     tween the VMEC and DESC flux surfaces, and εF (red) is the norm
+flux surfaces and dotted lines mark curves of constant ϑ . The VMEC   of the force balance error vector integrated over the plasma volume.
+equilibrium is displayed in black throughout the full domain, while
+the the DESC solution with resolution M = 18 is plotted in red on
+ϑ ∈ [0, π] for comparison.                                            flux surfaces. The other convergence plot in Figure 9 shows
+                                                                      the two error metrics steadily decreasing as both resolutions
+                                                                      increase. The force balance error for the M = N = 12 solution
+                                                                      is plotted in Figure 10, revealing that the error is below 1% in
+                                                                      most of the plasma volume except near the magnetic axis.
+                                                          10%-100%
+          1
+
+                                                                      C. Discussion
+                                                          1%-10%
+
+                                                                         The average discrepancy between the results of DESC and
+ Z [m]    0                                                           VMEC for the flux surfaces plotted in Figures 4 and 7 is on
+                                                                      the order of a few millimeters, as quantified by (33a). The
+                                                          0.1%-1%
+                                                                      strong trends of εX in Figures 6 and 9 give confidence that
+                                                                      DESC converges to the same equilibrium solution as VMEC.
+                                                                      Furthermore, although VMEC is a trusted benchmark, the cor-
+         -1
+                                                          <0.1%
+                                                                      responding convergence of εF indicates that the results are in-
+                                                                      deed accurate solutions to the MHD equilibrium equations.
+                                                                      The visualization of this accuracy in Figures 5 and 10 are
+              2         3                 4          5                noteworthy because similar self-consistent error calculations
+                                R [m]
+                                                                      are not straightforward in the numerical basis used by VMEC.
+                                                                      Furthermore, since VMEC solves the force balance equations
+FIG. 5. Normalized force balance error kFk2 /k∇p(ρ = 0.5)k2 for       indirectly through the energy principle, it may not always con-
+the tokamak equilibrium with resolution M = 18. Colored regions       verge to a solution with low errors. DESC solves them di-
+show the order of magnitude in the percent error.                     rectly, and the results validate that these equations are being
+                                                                      solved properly.
+                                                                         In fixed-boundary calculations, there is a trade-off between
+This is a configuration with a volume-averaged beta of about          solving these equilibrium equations and satisfying the plasma
+2% and a Shafranov shift of about 38 cm relative to the vac-          boundary constraints. This tension can explain the concen-
+uum case. Figure 7 shows a comparison of the equilibrium              tration of error near the boundary of the “D-shaped plasma,”
+flux surfaces calculated with a resolution of M = 18, N = 6 to        since many Fourier modes in (ϑ , ζ ) coordinates are required
+the VMEC solution. The convergence plot of radial resolution          to resolve the last closed flux surface of this tokamak. The he-
+in Figure 8 indicates that this DESC solution with M = 18 has         liotron has a much simpler elliptical boundary, and the error
+a similar magnetic axis location as the VMEC result with 256          near the last closed flux surface decreases quickly with only
+                                                                                                                                          9
+
+
+
+                   NFP = 0                     VMEC       NFP =       /3                         NFP = 2 /3
+               1                               DESC
+
+
+
+   Z [m]       0
+
+
+
+             -1
+
+
+
+               1
+
+
+
+   Z [m]       0
+
+
+
+             -1
+                   NFP =                                  NFP = 4 /3                             NFP = 5 /3
+
+                       9           10           11            9            10          11            9           10           11
+                                 R [m]                                  R [m]                                  R [m]
+
+
+FIG. 7. High-beta heliotron equilibrium. Solid lines show flux surfaces and dotted lines mark curves of constant ϑ . The VMEC equilibrium is
+displayed in black throughout the full domain, while the the DESC solution with resolution M = 18, N = 6 is plotted in red on ϑ ∈ [0, π] for
+comparison.
+
+
+a few modes. More modes are required in the core, however,              LAB to speed up development time, but is now being ported
+resulting in increased error near the magnetic axis for a given         to python to improve computational efficiencies. Future work
+resolution.                                                             will include: refined numerical techniques to improve conver-
+   DESC is restricted to operating in straight field-line coor-         gence, development of a free-boundary version of the code,
+dinates, which may appear to be a disadvantage compared to              and relaxing the assumption on nested flux surfaces to ac-
+the optimal poloidal angle of the VMEC formulation40 . How-             commodate magnetic islands and stochastic field lines. Fu-
+ever, DESC more than compensates for this inefficiency with             ture publications will demonstrate the benefits of using DESC
+its compact radial discretization provided by the global basis          in the following applications: resolving rational surfaces, ex-
+functions. VMEC’s use of radial finite differences uniformly            ploring the parameter space of stellarator equilibria, searching
+spaced in toroidal magnetic flux results in very poor resolution        for quasi-symmetric solutions, and assessing MHD stability.
+near the magnetic axis, while the Zernike polynomials inher-
+ently satisfy the necessary boundary conditions there. Figure
+8 clearly demonstrates that DESC has a superior rate of radial
+convergence. For the highest resolution shown in which the              SUPPLEMENTARY MATERIAL
+two codes agree on the magnetic axis location, the dimension
+of DESC’s state vector x was under 5 × 103 while the total                 The VMEC input files used for the benchmark solutions
+number of variables for VMEC was over 2 × 105 .                         are included as supplemental materials. The file DSHAPE cor-
+   In conclusion, DESC is an ideal MHD equilibrium con-                 responds to the D-shaped tokamak example, computed with
+struction code for stellarators. Its approach to solving the            256 flux surfaces and 18 poloidal Fourier modes. Similarly,
+equilibrium force balance equations and use of global pseu-             the file HELIOTRON corresponds to the heliotron configuration
+dospectral methods promise to make it more accurate and ef-             with 256 flux surfaces and 12 poloidal and toroidal Fourier
+ficient than existing codes. The code was written in MAT-               modes.
+                                                                                                                                                                     10
+
+                                         VMEC: flux surfaces (M=N=6)                                 conversations about the challenges of computing ideal MHD
+                         2   2
+                                 2   3
+                                             2   4
+                                                             2   5
+                                                                     2   6
+                                                                             2   7
+                                                                                             2   8   stellarator equilibria. This work was supported in part by the
+                  10.4                                                                               United States Department of Energy under contract numbers
+                                                                                                     DE-SC0015878, DE-SC0015480, and DE-SC0020372.
+
+
+                  10.3
+                                                                                                     DATA AVAILABILITY
+
+
+
+   R(0,0,0) [m]
+                                                                                                        The data that support the findings of this study are available
+                  10.2                                                                               from the corresponding author upon reasonable request. The
+                                                                                                     latest version of the DESC code can be accessed at the public
+                                                                                                     repository: https://github.com/ddudt/DESC41 .
+
+                  10.1
+                                                                                                     Appendix A: Derivation of Force Balance Equations
+
+
+                    10
+                                                                                                        The following equations outline how to compute the force
+                         6       8           10              12      14      16              18      balance errors fρ and fβ everywhere in the computational
+                                                     DESC: M (N=6)                                   domain. Given the Fourier-Zernike coefficients Rlmn and
+                                                                                                     Zlmn , the values of R(ρ, ϑ , ζ ), Z(ρ, ϑ , ζ ), and all their par-
+FIG. 8. Convergence of the magnetic axis position in the φ = ζ = 0                                   tial derivatives are known throughout the entire domain from
+plane for the heliotron equilibrium as a function of radial resolution.                              (13a-13b). The covariant basis vectors are defined as
+The VMEC results (black) are plotted against the number of flux                                                                                         
+surfaces (top axis), and the DESC results (red) are plotted against the                                            ∂ρ R             ∂ϑ R                ∂ζ R
+Zernike resolution M (bottom axis).                                                                        eρ =  0        eϑ =  0         eζ =  −R           (A1)
+                                                                                                                   ∂ρ Z             ∂ϑ Z                ∂ζ Z
+
+                                                                                                     and the notation eαγ is used as a shorthand for ∂γ (eα ). The Ja-
+                                                                                                     cobian and its partial derivatives are calculated from the basis
+                                                                                      10 5
+                                                                                                     vectors as
+                                                                                                            √
+                                                                                                              g = eρ · eϑ × eζ                                 (A2a)
+                                                                                                            √
+                                                                                                        ∂ρ ( g) = eρρ · eϑ × eζ + eρ · eϑ ρ × eζ + eρ · eϑ × eζ ρ
+                   10 -1                                                                                                                                      (A2b)
+      [m]                                                                                    [N]            √
+              X                                                                                  F      ∂ϑ ( g) = eρϑ · eϑ × eζ + eρ · eϑ ϑ × eζ + eρ · eϑ × eζ ϑ
+                                                                                                                                                               (A2c)
+                                                                                      10 4                  √
+                                                                                                        ∂ζ ( g) = eρζ · eϑ × eζ + eρ · eϑ ζ × eζ + eρ · eϑ × eζ ζ .
+                                                                                                                                                              (A2d)
+
+                                                                                                     The contravariant basis vectors are determined by
+
+                             4           6               8            10             12
+                                                                                                                                  eϑ × eζ
+                                                       M=N
+                                                                                                                              eρ =  √                            (A3a)
+                                                                                                                                      g
+                                                                                                                                  eζ × eρ
+FIG. 9. Convergence plot for the heliotron equilibrium as a function                                                          eϑ = √                             (A3b)
+                                                                                                                                      g
+of the spectral resolutions M and N. εX (black) is the average dis-
+tance between the VMEC and DESC flux surfaces, and εF (red) is
+                                                                                                                                  eρ × eϑ
+                                                                                                                              eζ = √ ,                           (A3c)
+the norm of the force balance error vector integrated over the plasma                                                                 g
+volume.
+                                                                                                     and then the metric coefficients are computed as
+
+ACKNOWLEDGMENTS                                                                                                                gρρ = eρ · eρ                     (A4a)
+                                                                                                                                ϑϑ        ϑ   ϑ
+                                                                                                                              g        = e ·e                    (A4b)
+  Thank you to Caoxiang Zhu, Sam Lazerson, and Mark                                                                            gζ ζ = eζ · eζ                    (A4c)
+Cianciosa for their help with using VMEC and properly inter-                                                                      ϑζ      ϑ   ζ
+preting its results. Thank you to Stuart Hudson for insightful                                                                g        = e ·e .                  (A4d)
+                                                                                                                                 11
+
+
+
+
+FIG. 10. Normalized force balance error kFk2 /k∇p(ρ = 0.5)k2 for the high-beta heliotron equilibrium with resolution M = 12, N = 12.
+Colored regions show the order of magnitude in the percent error.
+
+
+Recall that the magnetic field is written in the form               which are used to compute the partial derivatives of the co-
+                                                                    variant components:
+                  B = Bρ eρ + Bϑ eϑ + Bζ eζ               (A5a)
+                         ϑ        ζ
+                     = B eϑ + B eζ ,                      (A5b)
+
+and that in the straight field-line coordinates the contravariant
+components of the field are given by
+
+                                 ψ0
+                         Bζ =     √                       (A6a)
+                                                                                                
+                                2π g                                  ∂ρ Bϑ = ∂ρ Bζ ι-eϑ + eζ · eϑ                           (A8a)
+                                                                               ζ
+                                                                                  0                                          
+                         Bϑ = ι-Bζ .                      (A6b)             +B     ι- eϑ + ι-eρϑ + eζ ρ · eϑ + ι-eϑ + eζ · eϑ ρ
+                                                                                                
+                                                                      ∂ρ Bζ = ∂ρ Bζ ι-eϑ + eζ · eζ                           (A8b)
+ψ is simply a quadratic function of the flux label by definition:
+                                                                            + Bζ ι-0 eϑ + ι-eρϑ + eζ ρ · eζ + ι-eϑ + eζ · eζ ρ
+                                                                                                                             
+ψ(ρ) = ψa ρ 2 . Therefore, the global magnetic field B(ρ, ϑ , ζ )
+is entirely known from the coefficients Rlmn and Zlmn and the                                   
+                                                                      ∂ϑ Bρ = ∂ϑ Bζ ι-eϑ + eζ · eρ                           (A8c)
+input profile ι-(ρ). The force balance errors can then be calcu-                                                      
+lated directly from this magnetic field. The partial derivatives            + Bζ ι-eϑ ϑ + eζ ϑ · eρ + ι-eϑ + eζ · eρϑ
+of the contravariant components are                                                             
+                                                                      ∂ϑ Bζ = ∂ϑ Bζ ι-eϑ + eζ · eζ                           (A8d)
+                                           √ 
+                            ψ 00    ψ 0 ∂ρ
+                                                                                                                      
+                      ζ                      g                              +B ζ
+                                                                                   ι-eϑ ϑ + eζ ϑ · eζ + ι-eϑ + eζ · eζ ϑ
+                  ∂ρ B = √ −                               (A7a)
+                          2π g           2πg                                                    
+                                                                      ∂ζ Bρ = ∂ζ Bζ ι-eϑ + eζ · eρ                           (A8e)
+                                   √ 
+                            ψ 0 ∂ϑ   g                                         ζ
+                                                                                                                     
+                 ∂ϑ Bζ = −                                (A7b)             +B     ι-eϑ ζ + eζ ζ · eρ + ι-eϑ + eζ · eρζ
+                                 2πg
+                                   √ 
+                                                                                                
+                            ψ 0 ∂ζ   g                                ∂ζ Bϑ = ∂ζ Bζ ι-eϑ + eζ · eϑ                            (A8f)
+                      ζ
+                  ∂ζ B = −               ,                 (A7c)               ζ
+                                                                                                                      
+                                 2πg                                        +B     ι-eϑ ζ + eζ ζ · eϑ + ι-eϑ + eζ · eϑ ζ .
+                                                                                                                                        12
+
+Ampere’s Law then gives the contravariant components of the          Together with the contravariant basis vector equation
+current density from these partial derivative terms:
+                                                                                                               eϑ ρ × eζ
+                          ∂ϑ Bζ − ∂ζ Bϑ                                                         eρ (ρ = 0) =        √               (A14)
+                     Jρ =                                                                                      ∂ρ    g
+                                √                          (A9a)
+                              µ0 g
+                                                                     the radial force balance error equation (A12a) can be com-
+                          ∂ζ Bρ − ∂ρ Bζ
+                     Jϑ =       √                          (A9b)     puted at the magnetic axis. The helical error (A12b) needs
+                              µ0 g                                   further treatment because
+                          ∂ρ Bϑ − ∂ϑ Bρ
+                     Jζ =       √       .                  (A9c)                                       lim Fβ = 0                   (A15a)
+                              µ0 g                                                                     ρ→0
+
+This leads to the evaluation of the two independent com-                                            lim kβ k2 = ∞.                  (A15b)
+                                                                                                    ρ→0
+ponents of the force balance vector defined in (11) as
+F = Fρ ∇ρ + Fβ β                                                     Applying l’Hospital’s rule to this combined term yields
+                    √                
+                                                                                               ∂ϑ ρ Bζ − ∂ζ ρ Bϑ
+                                                                                                                   q
+               Fρ = g Bζ J ϑ − Bϑ J ζ − p0        (A10a)              Fβ kβ k2
+                                                                                 
+                                                                                           =            √ 
+                                                                                                                                         2
+                                                                                                                       eζ × eρ · eζ × eρ Bζ ,
+                    √ ρ                                                              ρ=0          µ0 ∂ρ    g
+               Fβ = gJ                            (A10b)                                                                         (A16)
+                                                                     where the mixed partial derivatives of the covariant field com-
+where the pressure profile p(ρ) is a known input. In order
+                                                                     ponents are defined at the magnetic axis by
+to have both components in the same units and convert the
+vectors to scalar equations, the magnitudes are used:                                                                          
+                                                                      ∂ϑ ρ Bζ (ρ = 0) = ∂ϑ ρ Bζ eζ · eζ + Bζ ι-eϑ ϑ ρ + 2eζ ϑ ρ · eζ
+                                                                                                                               (A17a)
+                         p
+     k∇ρk2 = keρ k2 = gρρ                             (A11a)
+                                                                                             ζ             ζ
+                                                                                                                                     
+        kβ k2 = kBζ eϑ − Bϑ eζ k2                 (A11b)              ∂ζ ρ Bϑ (ρ = 0) = ∂ζ B eζ · eϑ ρ + B eζ ζ · eϑ ρ + eζ · eϑ ζ ρ
+                q         2                                                                                                   (A17b)
+                                    2
+              = gϑ ϑ Bζ + gζ ζ (Bϑ ) − 2gϑ ζ Bϑ Bζ .
+                                                                     and the mixed contravariant derivative becomes
+Directions are also assigned such that ∇ρ · eρ > 0 denotes a                               √        √          √         √ 
+                                                                                  ψ 00 2∂ρρ   g ∂ϑ ρ    g − ∂ρ       g ∂ϑ ρρ   g
+positive radial force error and (β · eϑ ) β · eζ > 0 is a positive    ∂ϑ ρ Bζ =                            √ 3                  .
+helical error. These errors are evaluated at discrete points in                                   4π ∂ρ      g
+space and are weighted by the volumes represented by those                                                                    (A18)
+         √
+points, g∆ρ∆ϑ ∆ζ . This results in the two scalar equations          Equations (A13c), (A13e), and (A18) depend on higher-order
+                                                                                      √
+for the force balance error defined in (12):                         derivatives of g, and the only nonzero terms in these expres-
+                     √                                              sions at the magnetic axis are
+      fρ = Fρ k∇ρk2 g∆ρ∆ϑ ∆ζ sign ∇ρ · eρ                  (A12a)
+                    √                                                             √                                     
+      fβ = Fβ kβ k2 g∆ρ∆ϑ ∆ζ sign (β · eϑ ) sign β · eζ .
+                                                                           ∂ρρ ( g) = 2∂ρ R ∂ρϑ Z∂ρ R − ∂ρϑ R∂ρ Z           (A19a)
+                                                                                                                     
+                                                          (A12b)                       + R ∂ρ R∂ρρϑ Z − ∂ρ Z∂ρρϑ R
+                                                                                                                         
+                                                                                       + R 2∂ρρ R∂ρϑ Z − 2∂ρϑ R∂ρρ Z
+    Special attention must be given to the magnetic axis since                    √
+               √                                                                                                      
+the Jacobian g vanishes at the coordinate origin. The con-                  ∂ζ ρ ( g) = ∂ζ R ∂ρ R∂ρϑ Z − ∂ρϑ R∂ρ Z           (A19b)
+travariant components of the magnetic field are physical quan-                         + R ∂ζ ρ R∂ρϑ Z + ∂ρ R∂ζ ρϑ Z
+                                                                                                                     
+tities that have finite values at the magnetic axis but have an                                                      
+indeterminate form at ρ = 0. These components and their                                − R ∂ζ ρϑ R∂ρ Z + ∂ρϑ R∂ζ ρ Z
+derivatives are resolved by applying l’Hospital’s rule, multiple                  √                                   
+                                                                            ∂ζ ρ ( g) = ∂ζ R ∂ρϑ Z∂ρ R − ∂ρϑ R∂ρ Z           (A19c)
+times in some cases:                                                                                                 
+                                                                                       + R ∂ζ ρ R∂ρϑ Z + ∂ρ R∂ζ ρϑ Z
+                               ψ 00                                                                                    
+             Bζ (ρ = 0) =         √                      (A13a)                       − R ∂ζ ρϑ R∂ρ Z + ∂ρϑ R∂ζ ρϑ Z
+                            2π∂ρ    g                                             √                                       
+                                                                           ∂ϑ ρρ ( g) = 2∂ρϑ R ∂ρϑ Z∂ρ R − ∂ρϑ R∂ρ Z         (A19d)
+                            ι-ψ 00
+             Bϑ (ρ = 0) =                                 (A13b)
+                                                                                                                           
+                                 √                                                    + 2∂ρ R ∂ρϑ ϑ Z∂ρ R − ∂ρϑ ϑ R∂ρ Z
+                         2π∂ρ      g                                                                                     
+                              00      √                                               + R ∂ρ R∂ρρϑ ϑ Z − ∂ρ Z∂ρρϑ ϑ R
+              ζ             ψ ∂ρρ      g
+          ∂ρ B (ρ = 0) = −           √ 2                (A13c)                       + 2R ∂ρρ R∂ρϑ ϑ Z − ∂ρρ Z∂ρϑ ϑ R
+                                                                                                                           
+                           4π ∂ρ      g                                                                                  
+                                                                                       − R ∂ρϑ R∂ρρϑ Z − ∂ρϑ Z∂ρρϑ R .
+          ∂ϑ Bζ (ρ = 0) = 0                               (A13d)
+                                   √ 
+              ζ                ψ 00 ∂
+                               ζρ   g                                Finally, a nonzero value must be used for the Jacobian when
+          ∂ζ B (ρ = 0) = −        √ 2 .                 (A13e)     calculating the volume of the torus surrounding the magnetic
+                           2π ∂ρ   g                                                  √
+                                                                     axis denoted by g∆ρ∆ϑ ∆ζ .
+                                                                                                                                                          13
+
+Appendix B: List of Variables                                                   11 S. A. Lazerson, J. Loizu, S. Hirshman,     and S. R. Hudson, Phys. Plasmas
+                                                                                   23 (2016).
+                                                                                12 O. Betancourt, Comm. Pure Appl. Math. 41, 551–568 (1988).
+   Table I lists a summary of all the variables and their units.                13 K. Harafuji, T. Hayashi, and T. Sato, J. Comput. Phys. 81, 169–192 (1989).
+                                                                                14 A. Reiman and H. Greenside, Comput. Phys. Commun. 43, 157–167
+
+                                                                                   (1986).
+                                                                                15 S. P. Hirshman, R. Sanchez, and C. R. Cook, Phys. Plasmas 18 (2011).
+                       TABLE I. List of variables.                              16 S. R. Hudson, R. L. Dewar, G. Dennis, M. J. Hole, M. McGann, G. von
+Symbol                       Variable                      Units                   Nessi, and S. Lazerson, Phys. Plasmas 19 (2012).
+                                                                                17 R. C. Grimm, J. M. Greene, and J. L. Johnson, “Computation of the magne-
+R, φ , Z               toroidal coordinates           m, rad, m
+ρ, ϑ , ζ         straight field-line coordinates   none, rad, rad                  tohydrodynamic spectrum in axisymmetric toroidal confinement systems,”
+eρ , eϑ , eζ          covariant basis vectors                  m                   in Methods in Computational Physics: Advances in Research and Applica-
+                                                                                   tions, Vol. 16, edited by S. Fernbach, M. Rotenberg, and J. Killeen (Aca-
+eρ , eϑ , eζ       contravariant basis vectors               m-1
+√                                                                                  demic Press, Inc, New York, 1976) pp. 253–280.
+   g                flux coordinates Jacobian                 m3                18 W. D. D’haeseleer, W. N. G. Hitchon, J. D. Callen, and J. L. Shohet,
+λ (ϑ , ζ )     straight field-line stream function            rad                  Flux Coordinates and Magnetic Field Structure, edited by R. Glowinski,
+ψ(ρ), χ(ρ) toroidal and poloidal magnetic flux               Wb                    M. Holt, P. Hut, H. B. Keller, J. Killeen, S. A. Orszag, and V. V. Rusanov,
+ι-(ρ)                  rotational transform                 none                   Springer Series in Computational Physics (Springer-Verlag, 1991).
+                                                                                19 A. H. Boozer, Rev. Mod. Phys. 76, 1075–1079 (2005).
+p(ρ)                         pressure                          Pa
+µ0                      magnetic constant                  H m-1                20 J. P. Boyd, Chebyshev and Fourier Spectral Methods (Dover Publications,
+
+B                         magnetic field                        T                  Inc, New York, 2000).
+                                                                                21 F. Zernike, Mon. Not. R. Astron. Soc. 94, 377–384 (1934).
+J                         current density                  A m-2                22 T. Sakai and L. G. Redekopp, J. Compt. Phys. 228, 7069–7085 (2009).
+F                   force balance error vector             N m-3                23 T. Matsushima and P. S. Marcus, J. Compt. Phys. 120, 365–374 (1995).
+fρ , fβ           force balance error equations                N                24 W. T. M. Verkley, J. Compt. Phys. 136, 100–114 (1997).
+x            state vector of independent variables        m, rad                25 V. Lakshminarayanan and A. Fleck, J. Modern Optics 58, 545–561 (2011).
+f              system of equations to minimize                  N               26 J. Loomis, ASTM STP 666, 71–86 (1978).
+                                                                                27 V. L. Genberg, G. J. Michels, and K. B. Doyle, Proc SPIE 4771, 276–286
+M              maximum poloidal Fourier mode                none
+N              maximum toroidal Fourier mode                none                   (2002).
+                                                                                28 J. P. Boyd and F. Yu, J. Comput. Phys. 230, 1408–1438 (2011).
+NFP             number of toroidal field periods            none                29 W. H. Press, B. P. Flannery, S. A. Teukolsky, and W. T. Vetterling, Numeri-
+
+                                                                                   cal Recipes: The Art of Scientific Computing (Cambridge University Press,
+                                                                                   1989).
+                                                                                30 H. R. Lewis and P. M. Bellan, J. Math. Phys. 31, 2592–2596 (1990).
+1 L. L. Lao, H. St. John, and R. D. Stambaugh, Nucl. Fusion 25, 1611–1622       31 S. A. Orszag, J. Atmos. Sci. 28, 1074 (1971).
+                                                                                32 D. K. Lee, J. H. Harris, S. P. Hirshman, and G. H. Neilson, Nucl. Fusion
+  (1985).
+2 L. Spitzer, Phys. Fluids 1, 253–264 (1958).                                      28, 1351–1364 (1988).
+3 A. Dinklage, C. D. Beidler, P. Helander, G. Fuchert, H. Maaßberg, K. Rah-     33 R. L. Dewar and S. R. Hudson, Physica D 112, 275–280 (1998).
+                                                                                34 J. M. Carnicer and C. Godes, Numer. Algor. 66, 1–16 (2014).
+   barnia, T. Sunn Pedersen, Y. Turkin, R. C. Wolf, A. Alonso, et al., Nature
+                                                                                35 D. Ramos-Lopez, M. A. Sanchez-Granero, M. Fernandez-Martinez, and
+   Phys. 14, 855–860 (2018).
+ 4 M. D. Kruskal and R. M. Kulsrud, Phys. Fluids 1, 265–274 (1958).                A. Martinez-Finkelshtein, Appl. Math. Comput. 274, 247–257 (2016).
+ 5 R. Chodura and A. Schlüter, J. Comput. Phys. 41, 68–88 (1981).               36 L. N. Trefethen, Finite Difference and Spectral Methods for Ordinary and
+ 6 F. Bauer, O. Betancourt, and P. Garabedian, A Computational Method in           Partial Differential Equations (Cornell University, 1996).
+                                                                                37 K. Levenberg, Q. Appl. Math. 2, 164–168 (1944).
+   Plasma Physics, edited by W. Beiglbock, H. Canannes, and S. A. Orszag,
+                                                                                38 D. Marquardt, SIAM J. Appl. Math. 11, 431–441 (1963).
+   Springer Series in Computational Physics (Springer-Verlag, 1978).
+ 7 U. Schwenn, Comput. Phys. Commun. 31, 167–199 (1984).                        39 J. J. Moré, “The levenberg-marquardt algorithm: Implementation and the-
+ 8 A. Bhattacharjee, J. C. Wiley, and R. L. Dewar, Comput. Phys. Commun.           ory,” in Numerical Analysis, edited by G. A. Watson (Springer, 1978) pp.
+   31, 213–225 (1984).                                                             105–116.
+ 9 T. C. Hender, B. A. Carreras, L. Garcia, and J. A. Rome, J. Comput. Phys.    40 S. P. Hirshman and J. Breslau, Phys. Plasmas 5, 2664–2675 (1998).
+                                                                                41 D. W. Dudt and E. Kolemen, “DESC,” https://github.com/ddudt/
+   60, 76–96 (1985).
+10 S. P. Hirshman and J. C. Whitson, Phys. Fluids 26, 3553–3568 (1983).            DESC (2020).
+
